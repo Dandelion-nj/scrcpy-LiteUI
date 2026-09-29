@@ -13,6 +13,10 @@ apps_cache.json
 scrcpy_launch.log
 *.log
 
+# 应用图标库：图标版权归各 App 所有者，不属于本项目授权范围
+# （详见 THIRD-PARTY-NOTICES.md）。本地保留用于打包，不入库。
+icons/
+
 # 打包中间产物
 KuaitouBuild.spec.bak
 
