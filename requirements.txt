@@ -1,0 +1,9 @@
+# 快投 运行时依赖（Python 3.12）
+# 安装：.build\venv\Scripts\python.exe -m pip install -r requirements.txt
+pywebview==6.2.1        # 界面（Edge WebView2 后端）+ 原生文件对话框 js_api
+pystray==0.19.5         # 托盘图标（隐藏导入 pystray._win32）
+pillow==12.3.0          # 图标转 WebP / 托盘位图
+qrcode==8.2             # 扫码配对的二维码（SVG 输出）
+
+# 打包（仅打包时需要，日常运行不必安装）
+pyinstaller==6.22.3

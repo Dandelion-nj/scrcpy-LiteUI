@@ -48,9 +48,11 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 
 ```powershell
 py -3.12 -m venv .build\venv
-.build\venv\Scripts\python.exe -m pip install pywebview pystray qrcode pillow pyaxmlparser
+.build\venv\Scripts\python.exe -m pip install -r requirements.txt
 .build\venv\Scripts\python.exe launcher_server.py
 ```
+
+依赖清单见 [requirements.txt](requirements.txt)，版本已钉住。
 
 **注意**：`icons/` 目录未包含在本仓库中（原因见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。
 缺少它不影响运行，只是应用列表中的图标会走降级显示。如需完整图标效果，自行准备
@@ -74,8 +76,16 @@ py -3.12 -m venv .build\venv
 ## 项目结构
 
 ```
-launcher_server.py        后端主程序（HTTP 服务 + adb/scrcpy 封装 + 存储层 + 托盘）
+launcher_server.py        入口薄壳：单实例互斥、起 HTTP 服务、建窗口、接托盘与退出收尾
+kuaitou/                  后端实现（按职责分模块）
+  storage.py                路径常量 + ADS 存储 / 配置 / 日志
+  device.py                 adb / scrcpy 封装、设备状态、投屏、子进程管理
+  discover.py               三级设备发现（局域网 / mDNS / 端口扫描）
+  apps.py                   应用列表扫描 + 图标库匹配
+  system.py                 扫码配对、诊断、托盘、开机自启
+  web.py                    HTTP 路由与 js_api
 index.html                前端界面（原生 JS，无构建）
+requirements.txt          运行与打包依赖（含版本钉死）
 config.json               默认配置
 appicon.ico               应用图标
 KuaitouBuild.spec         PyInstaller 打包配置
@@ -83,6 +93,10 @@ start_web.vbs             源码态启动脚本
 scrcpy/                   随附的 scrcpy / adb 运行时（第三方，见声明）
 icons/                    应用图标库（未入库）
 ```
+
+模块依赖是单向的：`storage ← device ← discover ← web`，`apps` / `system` 建于其上，
+入口 `launcher_server.py` 只负责组装。深度搜索的进度通过 SSE（`/api/discover/deep/stream`）
+推送，前端在 EventSource 不可用或断线时自动回退到 700ms 轮询。
 
 ## 设备发现
 

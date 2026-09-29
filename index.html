@@ -1470,8 +1470,51 @@ async function autoDiscover() {
 }
 
 /* ---------- 深度搜索：局域网 + mDNS 先出结果，再对存活主机扫端口段 ---------- */
-// 后端是后台任务：/api/discover/deep 启动，然后每 700ms 轮询 /status 拿进度，
-// 界面能实时看到"扫到第几台 / 哪个 IP"，也不会因为扫描久而卡住。
+// 后端是后台任务：/api/discover/deep 启动，进度优先走 SSE 实时推送
+// （/api/discover/deep/stream）；EventSource 不可用或中途断开时自动回退到
+// 700ms 轮询 /status —— 两条路拿到的都是同一份进度快照，界面表现一致。
+const DEEP_POLL_MS = 700;
+
+// SSE 推送：resolve 最终快照；通道不可用时 reject，由调用方转轮询兜底。
+function deepStream(onProgress) {
+  return new Promise((resolve, reject) => {
+    if (!window.EventSource) { reject(new Error('不支持 EventSource')); return; }
+    let es = null, last = null, settled = false;
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      try { if (es) es.close(); } catch (e) {}   // 及时关闭，别让 EventSource 自动重连
+      fn(arg);
+    };
+    try { es = new EventSource('/api/discover/deep/stream'); }
+    catch (e) { reject(e); return; }
+    es.onmessage = ev => {
+      let st;
+      try { st = JSON.parse(ev.data); } catch (e) { return; }
+      last = st;
+      onProgress(st);
+      if (!st.running) done(resolve, st);       // 收到终态：本轮结束
+    };
+    es.onerror = () => {
+      // 服务端推完终态关流也会触发 error：收到过终态就算正常收尾，
+      // 否则说明推送通道不可用，交给轮询兜底。
+      if (last && !last.running) done(resolve, last);
+      else done(reject, new Error('SSE 通道中断'));
+    };
+  });
+}
+
+// 轮询兜底：与改动前的进度获取方式完全一致。
+async function deepPoll(onProgress) {
+  let st = await api('/api/discover/deep/status');
+  while (st && st.running) {
+    onProgress(st);
+    await sleep(DEEP_POLL_MS);
+    st = await api('/api/discover/deep/status');
+  }
+  return st;
+}
+
 async function deepDiscover() {
   const btn = document.getElementById('deepBtn');
   const hint = document.getElementById('scanHint');
@@ -1480,13 +1523,15 @@ async function deepDiscover() {
   document.getElementById('scanList').innerHTML = '';
   btn.textContent = '深度搜索中…';
   hint.textContent = '正在搜索局域网设备 + mDNS（约 6 秒先出结果）…';
+  const onProgress = st => {
+    renderScanList(st.found || []);
+    if (st.text) hint.textContent = st.text;
+  };
   try {
     let st = await api('/api/discover/deep');
-    while (st && st.running) {
-      renderScanList(st.found || []);
-      if (st.text) hint.textContent = st.text;
-      await sleep(700);
-      st = await api('/api/discover/deep/status');
+    if (st && st.running) {
+      try { st = await deepStream(onProgress); }
+      catch (e) { st = await deepPoll(onProgress); }
     }
     const found = (st && st.found) || [];
     renderScanList(found);
