@@ -1,0 +1,1965 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>快投</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0f1115;
+  --card: #1a1d24;
+  --card-hover: #232730;
+  --border: #2b2f3a;
+  --text: #f5f6f8;
+  --text-dim: #8b90a0;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --green: #10b981;
+  --warn: #f59e0b;
+  --red: #ef4444;
+  --radius: 10px;
+}
+
+html, body { height: 100%; overflow: hidden; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-size: 14px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar h1 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn:hover { background: var(--card-hover); border-color: var(--accent); }
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.btn-primary:hover { background: var(--accent-hover); }
+
+/* 设置页：整页显示，顶部标签分类 */
+.settings-page {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  z-index: 100;
+  display: none;
+  flex-direction: column;
+}
+.settings-page.open { display: flex; }
+
+.settings-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-header h2 { font-size: 17px; font-weight: 600; }
+.close-btn {
+  background: none; border: none; color: var(--text-dim);
+  font-size: 22px; cursor: pointer; padding: 0 4px;
+}
+.close-btn:hover { color: var(--text); }
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.settings-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.settings-tab-btn:hover { color: var(--text); }
+.settings-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+/* 内容限宽居中：窗口拉宽时输入框不会被拉成一条，长文案也不会跨屏 */
+.tab-pane > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+
+/* 设置页底部常驻的版本号：排查时用来确认两边跑的是不是同一个版本 */
+.app-version {
+  flex: 0 0 auto;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 8px 0 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 主页设备标签页 */
+.device-tabs {
+  display: none;
+  gap: 6px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.device-tabs.show { display: flex; }
+.device-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px 6px 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.device-tab:hover { border-color: var(--accent); color: var(--text); }
+.device-tab.active { border-color: var(--accent); background: var(--card-hover); color: var(--text); }
+.device-tab .tab-model { font-weight: 600; }
+.device-tab .tab-addr { font-family: Consolas, ui-monospace, monospace; font-size: 11px; }
+.device-tab .tab-close {
+  width: 16px; height: 16px; line-height: 15px; text-align: center;
+  border-radius: 50%; color: var(--text-dim); font-size: 13px;
+}
+.device-tab .tab-close:hover { background: var(--red); color: #fff; }
+
+/* 已连接设备列表（设置页） */
+.conn-list { display: flex; flex-direction: column; gap: 6px; }
+.conn-item {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; font-size: 12px;
+}
+.conn-item .conn-name { font-weight: 600; }
+.conn-item .conn-addr {
+  flex: 1; color: var(--text-dim);
+  font-family: Consolas, ui-monospace, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+#hintText { color: var(--accent); }
+
+.section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.section-title {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 14px;
+  font-weight: 600;
+}
+.section-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+/* 开关型设置项：左侧标题+说明，右侧拨动开关 */
+.settings-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-item-title { font-size: 13px; margin-bottom: 4px; }
+.settings-item-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider {
+  position: absolute; inset: 0; cursor: pointer;
+  background: var(--border); border-radius: 12px;
+  transition: background 0.15s;
+}
+.slider::before {
+  content: ''; position: absolute; left: 3px; top: 3px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: #fff; transition: transform 0.15s;
+}
+.switch input:checked + .slider { background: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(20px); }
+
+.form-group { margin-bottom: 14px; }
+.form-group label {
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.form-group input, .form-group select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.form-group input:focus, .form-group select:focus {
+  border-color: var(--accent);
+}
+
+.row-2 { display: flex; gap: 8px; }
+.row-2 > * { flex: 1; }
+
+/* 设备扫描结果 */
+.scan-hint { font-size: 11px; color: var(--text-dim); line-height: 1.6; margin-top: 8px; }
+.scan-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.scan-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; font-size: 12px; cursor: pointer; transition: all 0.15s;
+  background: var(--bg); border: 1px dashed var(--border); border-radius: 8px;
+}
+.scan-item:hover { border-color: var(--accent); border-style: solid; background: var(--card-hover); }
+.scan-item.on { border-color: var(--green); border-style: solid; }
+.scan-item.wait { border-color: var(--warn); border-style: solid; }
+.scan-item .addr { font-family: Consolas, ui-monospace, monospace; }
+.scan-item .tag { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.scan-item.on .tag { color: var(--green); }
+.scan-item.wait .tag { color: var(--warn); }
+
+/* 扫码连接：二维码放白底盒子里（手机相机对白底黑码识别最好） */
+.qr-box {
+  width: 200px; height: 200px; margin: 12px auto 8px;
+  background: #fff; border-radius: 10px; padding: 8px;
+}
+.qr-box svg { width: 100%; height: 100%; display: block; }
+.qr-sub {
+  text-align: center; font-size: 11px; color: var(--text-dim);
+  word-break: break-all; margin-bottom: 6px; user-select: text;
+}
+
+/* 卡片内分隔线：「添加设备」等卡片里的次级入口用一条细线隔开，不再各占一张卡 */
+.sub-divider { height: 1px; background: var(--border); margin: 14px 0; }
+
+/* 折叠卡片：次要入口（USB / 按地址 / 配对码）默认收起，设置页不再一眼望不到底 */
+details.section > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center;
+  justify-content: space-between; gap: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
+  color: var(--text-dim); text-transform: uppercase;
+}
+details.section > summary::-webkit-details-marker { display: none; }
+details.section > summary::after { content: '▾'; font-size: 12px; transition: transform 0.2s; }
+details.section > summary:hover { color: var(--text); }
+details.section[open] > summary { margin-bottom: 6px; }
+details.section[open] > summary::after { transform: rotate(180deg); }
+
+/* 小号按钮：放在抽屉标题行等紧凑位置 */
+.btn-mini { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+
+/* 诊断输出 */
+.diag-box {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  user-select: text;
+}
+
+/* 主内容 */
+.main {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.search-wrap { position: relative; margin-bottom: 20px; }
+
+.search-box {
+  width: 100%;
+  padding: 12px 40px 12px 16px;
+  font-size: 14px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  outline: none;
+}
+.search-box:focus { border-color: var(--accent); }
+
+.search-clear {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.search-clear.show { display: flex; }
+.search-clear:hover { background: var(--accent); color: #fff; }
+
+mark {
+  background: rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.empty-hint {
+  display: none;
+  text-align: center;
+  color: var(--text-dim);
+  padding: 60px 0;
+  font-size: 13px;
+}
+
+.apps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.app-item {
+  position: relative;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 10px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.app-item:hover {
+  background: var(--card-hover);
+  border-color: var(--accent);
+  transform: translateY(-2px);
+}
+
+.app-icon {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  margin: 0 auto 10px;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+}
+
+.app-icon-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 600;
+  color: white;
+}
+
+.app-icon-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.app-icon-img.loaded { opacity: 1; }
+
+.app-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 快捷启动 / 抽屉内卡片的角标按钮 */
+.app-add {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.92);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  z-index: 2;
+}
+.app-item:hover .app-add { opacity: 1; }
+.app-add.on { opacity: 1; background: rgba(16, 185, 129, 0.92); }
+.app-add.on:hover { background: var(--red); }
+.app-add.quick { background: rgba(139, 144, 160, 0.55); }
+.app-add.quick:hover { background: var(--red); }
+
+/* 快捷启动区 */
+.quick-section { margin-bottom: 18px; }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.section-head .label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.section-head .count { font-size: 12px; color: var(--text-dim); }
+
+.quick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+.quick-grid .app-item { padding: 12px 8px; }
+.quick-grid .app-icon { width: 40px; height: 40px; margin-bottom: 8px; border-radius: 10px; }
+.quick-grid .app-icon-fallback { font-size: 17px; }
+.quick-grid .app-name { font-size: 11px; }
+
+.quick-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+/* 应用列表抽屉 */
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.drawer-head:hover { background: var(--card-hover); border-color: var(--accent); }
+.drawer-title { font-size: 13px; font-weight: 600; }
+.drawer-count { flex: 1; font-size: 12px; color: var(--text-dim); }
+.drawer-chevron { font-size: 12px; color: var(--text-dim); transition: transform 0.2s; }
+.drawer.collapsed .drawer-chevron { transform: rotate(-90deg); }
+.drawer-body { padding-top: 14px; }
+.drawer.collapsed .drawer-body { display: none; }
+
+/* 底部状态栏 */
+.statusbar {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.status-left { display: flex; align-items: center; gap: 8px; }
+.dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim);
+}
+.dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.dot.offline { background: var(--red); }
+/* 等待授权 / 设备离线：正在处理中，不是失败 */
+.dot.pending { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>快投</h1>
+  <div class="topbar-actions">
+    <button class="btn" onclick="launchDesktop()">🖥 镜像桌面</button>
+    <button class="btn" onclick="toggleSettings()">⚙ 设置</button>
+  </div>
+</div>
+
+<div class="device-tabs" id="deviceTabs"></div>
+
+<div class="settings-page" id="settingsPage">
+  <div class="settings-header">
+    <h2>设置</h2>
+    <button class="close-btn" onclick="toggleSettings()">×</button>
+  </div>
+
+  <div class="settings-tabs">
+    <button class="settings-tab-btn active" data-tab="conn" onclick="setSettingsTab('conn')">设备与连接</button>
+    <button class="settings-tab-btn" data-tab="screen" onclick="setSettingsTab('screen')">画面与声音</button>
+    <button class="settings-tab-btn" data-tab="general" onclick="setSettingsTab('general')">常规</button>
+    <button class="settings-tab-btn" data-tab="diag" onclick="setSettingsTab('diag')">诊断</button>
+  </div>
+
+  <div class="settings-content">
+
+    <div class="tab-pane active" id="pane-conn">
+      <div class="section">
+        <div class="section-title">已连接设备</div>
+        <div class="conn-list" id="connList"></div>
+        <div class="sub-divider"></div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">掉线自动重连</div>
+            <div class="settings-item-desc">无线掉线（手机熄屏、路由器休眠）后自动重连，间隔 6→60 秒逐次拉长，最多 10 次；主动点「断开」的设备不会重连。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="reconnect_enabled" onchange="saveReconnect(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section" id="recentSection" style="display:none">
+        <div class="section-title">最近连接</div>
+        <div class="scan-list" id="recentList"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">添加设备</div>
+        <button class="btn btn-primary" style="width:100%" id="qrBtn" onclick="startQr()">📱 扫码连接（推荐）</button>
+        <div id="qrPanel" style="display:none">
+          <div class="qr-box" id="qrBox"></div>
+          <div class="qr-sub" id="qrSub"></div>
+        </div>
+        <div class="scan-hint" id="qrHint">手机（Android 11+）：设置 → 开发者选项 → 无线调试 → 使用二维码配对设备，扫描这里出现的二维码。</div>
+        <div class="sub-divider"></div>
+        <div class="row-2">
+          <button class="btn" id="scanBtn" onclick="discover()">🔍 扫描局域网</button>
+          <button class="btn" id="deepBtn" onclick="deepDiscover()">🧭 深度搜索</button>
+        </div>
+        <div class="scan-hint" id="scanHint">「扫描」查同网段 5555 端口；「深度搜索」= 局域网 + mDNS + 端口扫描（30000~50000，多线程），能发现跨网段 / 随机端口的设备，较慢但最全。插上数据线会自动用 USB 有线。</div>
+        <div class="scan-list" id="scanList"></div>
+      </div>
+
+      <details class="section" id="advDetails">
+        <summary>其它方式：USB / 按地址 / 配对码</summary>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">USB 一键转无线</div>
+            <div class="settings-item-desc">手机用数据线连上电脑（已允许 USB 调试）后点右边按钮：自动切到 5555 无线模式并连上，之后可以拔线。</div>
+          </div>
+          <button class="btn btn-mini" id="usbBtn" onclick="usbToWifi()">转无线</button>
+        </div>
+
+        <div class="sub-divider"></div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>按地址连接</label>
+          <div class="row-2">
+            <input id="ip" placeholder="IP 地址" onchange="saveConfig()">
+            <input id="port" placeholder="端口（默认 5555）" onchange="saveConfig()">
+            <button class="btn btn-primary" id="connectBtn" onclick="doConnect()" style="flex:0 0 80px">连接</button>
+          </div>
+        </div>
+
+        <div class="sub-divider"></div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>首次配对（手机「无线调试 → 使用配对码配对设备」里显示的端口和配对码）</label>
+          <div class="row-2">
+            <input id="pairPort" placeholder="配对端口">
+            <input id="pairCode" placeholder="配对码">
+            <button class="btn" onclick="doPair()" style="flex:0 0 80px">配对</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="tab-pane" id="pane-screen">
+      <div class="section">
+        <div class="section-title">画面</div>
+        <div class="section-desc">这几项对「镜像应用」和「镜像桌面」都生效；改完重新投屏一次即可。</div>
+        <div class="row-2" style="margin-bottom:14px">
+          <div class="form-group" style="margin-bottom:0">
+            <label>最大帧率</label>
+            <input id="fps" placeholder="如 60" onchange="saveConfig()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>码率 (Mbps)</label>
+            <input id="bitrate" placeholder="如 8" onchange="saveConfig()">
+          </div>
+        </div>
+        <div class="row-2">
+          <div class="form-group" style="margin-bottom:0">
+            <label>视频编码</label>
+            <select id="video_codec" onchange="saveConfig()">
+              <option value="auto">自动（推荐）</option>
+              <option value="h264">H.264（兼容性最好）</option>
+              <option value="h265">H.265（同画质更省带宽）</option>
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>最大尺寸（0 = 原始分辨率）</label>
+            <input id="max_size" placeholder="如 1280" onchange="saveConfig()">
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">虚拟屏（仅「镜像应用」）</div>
+        <div class="section-desc">启动快捷启动里的应用时，按下面的分辨率新开一块虚拟屏，不影响手机本身的设置。「镜像桌面」显示的是手机真实画面，与此无关。UI 放大倍数填 1.0 时与电脑 DPI 一致。</div>
+        <div class="row-2">
+          <div class="form-group" style="margin-bottom:0">
+            <label>宽</label>
+            <input id="res_w" placeholder="如 1080" onchange="saveConfig()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>高</label>
+            <input id="res_h" placeholder="如 2400" onchange="saveConfig()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>UI 放大倍数</label>
+            <input id="scale" placeholder="如 1.0" onchange="saveConfig()">
+          </div>
+        </div>
+        <div class="sub-divider"></div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>分辨率预设</label>
+          <div class="row-2">
+            <select id="resPreset" onchange="applyPreset(this.value)" style="background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:10px 12px; color:var(--text); font-size:13px; outline:none">
+              <option value="">选择预设</option>
+            </select>
+            <button class="btn" style="flex:0 0 106px" onclick="savePreset()">保存当前</button>
+            <button class="btn" style="flex:0 0 106px" onclick="deletePreset()">删除所选</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">声音</div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>声音输出</label>
+          <select id="audio_mode" onchange="saveConfig()">
+            <option value="both">手机和电脑都播放</option>
+            <option value="phone">仅手机播放</option>
+            <option value="pc">仅电脑播放（手机静音）</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane" id="pane-general">
+      <div class="section">
+        <div class="section-title">窗口与托盘</div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">关闭主界面时缩小到托盘</div>
+            <div class="settings-item-desc">开启后点关闭不会退出应用，而是收进系统托盘继续在后台待命；右键托盘图标可以重新打开主界面、按设备启动镜像桌面或快捷启动的应用，或退出应用。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="minimize_to_tray" onchange="saveTray(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">启动</div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">开机自启动</div>
+            <div class="settings-item-desc">开机后在后台静默启动（只驻系统托盘，不弹主界面），右键托盘图标即可投屏。开启时会自动打开上面的「缩小到托盘」。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autostart" onchange="saveAutostart(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-pane" id="pane-diag">
+      <div class="section">
+        <div class="section-title">诊断</div>
+        <div class="row-2">
+          <button class="btn" onclick="runDiag(false)">🩺 环境自检</button>
+          <button class="btn" onclick="runDiag(true)">🧪 完整诊断</button>
+        </div>
+        <div class="scan-hint">换电脑后「连得上 adb 却扫不出应用 / 投不出画面」时点这里。诊断完成后会弹出「另存为」对话框，由你自己选择报告的保存位置（取消则只在这里显示结果）。</div>
+        <div class="row-2" style="margin-top: 10px">
+          <button class="btn" onclick="saveReport()">💾 保存诊断报告</button>
+          <button class="btn" onclick="exportLog()">📤 导出日志</button>
+        </div>
+        <pre class="diag-box" id="diagBox" style="display:none"></pre>
+      </div>
+    </div>
+
+  </div>
+  <div class="app-version">快投 <span id="appVersion"></span></div>
+</div>
+
+<div class="main">
+  <div class="quick-section">
+    <div class="section-head">
+      <span class="label">快捷启动</span>
+      <span class="count" id="quickCount"></span>
+    </div>
+    <div class="quick-grid" id="quickGrid"></div>
+    <div class="quick-empty" id="quickEmpty">暂无快捷启动应用 — 鼠标移到应用卡片上，点右上角「＋」添加</div>
+  </div>
+
+  <div class="search-wrap">
+    <input class="search-box" id="search" placeholder="🔍 搜索应用（支持拼音 / 首字母，如 wx、weixin）" oninput="filterApps()">
+    <button class="search-clear" id="searchClear" onclick="clearSearch()" title="清空 (Esc)">×</button>
+  </div>
+
+  <div class="drawer" id="appsDrawer">
+    <div class="drawer-head" onclick="toggleDrawer()">
+      <span class="drawer-title">全部应用</span>
+      <span class="drawer-count" id="drawerCount"></span>
+      <button class="btn btn-mini" id="refreshBtn" onclick="refreshApps(event)" title="重新扫描当前设备的应用列表">↻ 刷新</button>
+      <span class="drawer-chevron">▾</span>
+    </div>
+    <div class="drawer-body">
+      <div class="apps-grid" id="appsGrid"></div>
+      <div class="empty-hint" id="emptyHint">未找到匹配的应用</div>
+    </div>
+  </div>
+</div>
+
+<div class="statusbar">
+  <div class="status-left">
+    <span class="dot" id="dot"></span>
+    <span id="statusText">未连接</span>
+    <span id="hintText"></span>
+  </div>
+  <div id="appCount">0 个应用</div>
+</div>
+
+<script>
+let allApps = [];              // 当前标签页设备的应用列表
+let appsLoadState = 'idle';    // idle | loading | done：保证自动扫描只触发一次，不会空转重扫
+let quickList = [];            // 当前设备的快捷启动包名，顺序即展示顺序
+let drawerCollapsed = false;   // 全部应用抽屉折叠状态
+
+// 多设备：每台设备一份独立上下文（应用列表按序列号缓存、各自快捷启动）
+let devices = [];              // [{serial, ip, port, model, connected}]
+let config = {};               // 最近一次拿到的配置
+let activeDevice = null;       // 当前标签页的设备序列号
+let appCtx = {};               // serial -> {apps, state}
+let quickMap = {};             // serial -> [包名]（配置镜像；"*" 为无专属列表时的默认值）
+let devKeyApplied = '';        // 设备/标签页渲染指纹，避免轮询时反复重建 DOM
+let presetKey = '';
+let pendingAddr = null;        // 已连通 TCP、正在等手机点「允许 USB 调试」的地址
+let pendingSince = 0;
+
+// ===== 搜索匹配（纯逻辑：拼音 / 首字母 / 多关键词 / 评分 / 高亮区间）=====
+const PINYIN_GROUPS = {"a":"啊阿嗄锕","ai":"埃挨哎唉哀皑癌蔼矮艾碍爱隘捱嗳嗌嫒瑷暧砹锿霭","an":"鞍氨安俺按暗岸胺案谙埯揞犴庵桉铵鹌黯","ang":"肮昂盎","ao":"凹敖熬翱袄傲奥懊澳坳拗嗷岙廒遨媪骜獒聱螯鏊鳌鏖","ba":"芭捌扒叭吧笆八疤巴拔跋靶把耙坝霸罢爸茇菝岜灞钯粑鲅魃","bai":"白柏百摆佰败拜稗捭掰擘","ban":"斑班搬扳般颁板版扮拌伴瓣半办绊阪坂钣瘢癍舨","bang":"邦帮梆榜膀绑棒磅蚌镑傍谤蒡浜","bao":"苞胞包褒薄雹保堡饱宝抱报暴豹鲍爆勹葆孢煲鸨褓趵龅","bei":"杯碑悲卑北辈背贝钡倍狈备惫焙被孛陂邶蓓呗悖碚鹎褙鐾鞴","ben":"奔苯本笨畚坌贲锛","beng":"崩绷甭泵蹦迸嘣甏","bi":"逼鼻比鄙笔彼碧蓖蔽毕毙毖币庇痹闭敝弊必壁臂避陛匕俾荜荸萆薜吡哔狴庳愎滗濞弼妣婢嬖璧畀铋秕裨筚箅篦舭襞跸髀","bian":"鞭边编贬扁便变卞辨辩辫遍匾弁苄忭汴缏煸砭碥窆褊蝙笾鳊","biao":"标彪膘表婊骠杓飑飙飚灬镖镳瘭裱鳔髟","bie":"鳖憋别瘪蹩","bin":"彬斌濒滨宾摈傧豳缤玢槟殡膑镔髌鬓","bing":"兵冰柄丙秉饼炳病并禀冫邴摒","bo":"剥玻菠播拨钵波博勃搏铂箔伯帛舶脖膊渤驳卜亳啵饽檗礴钹鹁簸跛踣","bu":"捕哺补埠不布步簿部怖卟逋瓿晡钚钸醭","ca":"擦嚓礤","cai":"猜裁材才财睬踩采彩菜蔡","can":"餐参蚕残惭惨灿掺孱骖璨粲黪","cang":"苍舱仓沧藏伧","cao":"操糙槽曹草艹嘈漕螬艚","ce":"厕策侧册测恻","cen":"岑涔","ceng":"层蹭曾噌","cha":"插叉茬茶查碴搽察岔差诧猹馇汊姹杈槎檫锸镲衩","chai":"拆柴豺侪钗瘥虿","chan":"搀蝉馋谗缠铲产阐颤冁谄蒇廛忏潺澶羼婵骣觇禅镡蟾躔","chang":"昌猖场尝常偿肠厂敞畅唱倡伥鬯苌菖徜怅惝阊娼嫦昶氅鲳","chao":"超抄钞朝嘲潮巢吵炒怊晁焯耖","che":"车扯撤掣彻澈坼屮砗","chen":"郴臣辰尘晨忱沉陈趁衬谌谶抻嗔宸琛榇碜龀","cheng":"撑称城橙成呈乘程惩澄诚承逞骋秤丞埕枨柽晟塍瞠铖裎蛏酲","chi":"吃痴持池迟弛驰耻齿侈尺赤翅斥炽傺坻墀茌叱哧啻嗤彳饬媸敕眵鸱瘛褫蚩螭笞篪踟魑","chong":"充冲虫崇宠茺忡憧铳舂艟","chou":"抽酬畴踌稠愁筹仇绸瞅丑臭俦帱惆瘳雠","chu":"初出橱厨躇锄雏滁除楚础储矗搐触处畜亍刍怵憷绌杵楮樗褚蜍蹰黜","chuai":"揣搋啜嘬膪踹","chuan":"川穿椽传船喘串舛遄巛氚钏舡","chuang":"疮窗幢床闯创怆","chui":"吹炊捶锤垂椎陲棰槌","chun":"春椿醇唇淳纯蠢莼鹑蝽","chuo":"戳绰辶辍踔龊","ci":"疵茨磁雌辞慈瓷词此刺赐次伺茈呲祠鹚糍","cong":"聪葱囱匆从丛苁淙骢琮璁枞","cou":"凑辏腠","cu":"粗醋簇促蔟徂猝殂酢蹙蹴","cuan":"蹿篡窜汆撺爨镩","cui":"摧崔催脆瘁粹淬翠萃啐悴璀榱毳","cun":"村存寸忖皴","cuo":"磋撮搓措挫错厝嵯脞锉矬痤鹾蹉","da":"搭达答瘩打大耷哒嗒怛妲沓褡笪靼鞑","dai":"呆歹傣戴带殆代贷袋待逮怠埭甙呔岱迨骀绐玳黛","dan":"耽担丹单郸掸胆旦氮但惮淡诞弹蛋儋萏啖澹殚赕眈疸瘅聃箪","dang":"当挡党荡档谠凼菪宕砀铛裆","dao":"刀捣蹈倒岛祷导到稻悼道盗刂叨忉氘焘纛","de":"德得的锝","deng":"蹬灯登等瞪凳邓噔嶝戥磴镫簦","di":"堤低滴迪敌笛狄涤翟嫡抵底地蒂第帝弟递缔氐籴诋谛邸荻嘀娣柢棣觌砥碲睇镝羝骶","dian":"颠掂滇碘点典靛垫电佃甸店惦奠淀殿阽坫巅玷钿癜癫簟踮","diao":"碉叼雕凋刁掉吊钓调铞铫貂鲷","die":"跌爹碟蝶迭谍叠垤堞揲喋嗲牒瓞耋蹀鲽","ding":"丁盯叮钉顶鼎锭定订仃啶玎腚碇铤疔耵酊","diu":"丢铥","dong":"东冬董懂动栋侗恫冻洞垌咚岽峒氡胨胴硐鸫","dou":"兜抖斗陡豆逗痘都蔸窦蚪篼","du":"督毒犊独读堵睹赌杜镀肚度渡妒芏嘟渎椟牍碡蠹笃髑黩","duan":"端短锻段断缎椴煅簖","dui":"堆兑队对怼憝碓镦","dun":"墩吨蹲敦顿囤钝盾遁沌炖砘礅盹趸","duo":"掇哆多夺垛躲朵跺舵剁惰堕咄哚缍柁铎裰踱","e":"蛾峨鹅俄额讹娥恶厄扼遏鄂饿噩谔垩苊莪萼呃愕阏屙婀轭腭锇锷鹗颚鳄","ei":"诶","en":"恩蒽摁","er":"而儿耳尔饵洱二贰佴迩珥铒鸸鲕","fa":"发罚筏伐乏阀法珐垡砝","fan":"藩帆番翻樊矾钒繁凡烦反返范贩犯饭泛蕃蘩幡梵燔畈蹯","fang":"坊芳方肪房防妨仿访纺放匚邡枋钫舫鲂","fei":"菲非啡飞肥匪诽吠肺废沸费芾狒悱淝妃绯榧腓斐扉镄痱蜚篚翡霏鲱","fen":"芬酚吩氛分纷坟焚汾粉奋份忿愤粪偾瀵棼鲼鼢","feng":"丰封枫蜂峰锋风疯烽逢冯缝讽奉凤俸酆葑唪沣砜","fou":"否缶","fu":"佛夫敷肤孵扶拂辐幅氟符伏俘服浮涪福袱弗甫抚辅俯釜斧腑府腐赴副覆赋复傅付阜父腹负富讣附妇缚咐匐凫阝郛芙苻茯莩菔拊呋幞怫滏艴孚驸绂绋桴赙祓砩黻黼罘稃馥蚨蜉蝠蝮麸趺跗鲋鳆","ga":"噶嘎伽尬呷尕尜旮钆","gai":"该改概钙盖溉丐陔垓戤赅","gan":"干甘杆柑竿肝赶感秆敢赣坩苷尴擀泔淦澉绀橄旰矸疳酐","gang":"冈刚钢缸肛纲岗港杠戆罡筻","gao":"篙皋高膏羔糕搞镐稿告睾诰郜藁缟槔槁杲锆","ge":"哥歌搁戈鸽胳疙割革葛格阁隔铬个各咯鬲仡哿圪塥嗝纥搿膈硌镉袼虼舸骼","gei":"给","gen":"根跟亘茛哏艮","geng":"耕更庚羹埂耿梗哽赓绠鲠","gong":"工攻功恭龚供躬公宫弓巩汞拱贡共廾珙肱蚣觥","gou":"钩勾沟苟狗垢构购够佝诟岣遘媾缑枸觏彀笱篝鞲","gu":"辜菇咕箍估沽孤姑鼓古蛊骨谷股故顾固雇嘏诂菰呱崮汩梏轱牯牿臌毂瞽罟钴锢鸪鹄痼蛄酤觚鲴鹘","gua":"刮瓜剐寡挂褂卦诖栝胍鸹聒","guai":"乖拐怪掴","guan":"棺关官冠观管馆罐惯灌贯倌莞掼涫盥鹳鳏","guang":"光广逛咣犷桄胱","gui":"瑰规圭硅归龟闺轨鬼诡癸桂柜跪贵刽傀炔匦刿庋宄妫桧晷皈簋鲑鳜","gun":"辊滚棍丨衮绲磙鲧","guo":"锅郭国果裹过馘埚呙帼崞猓椁虢蜾蝈","ha":"蛤哈铪","hai":"骸孩海氦亥害骇还嗨胲醢","han":"酣憨邯韩含涵寒函喊罕翰撼捍旱憾悍焊汗汉邗菡撖阚瀚晗焓顸颔蚶鼾","hang":"夯杭航沆绗珩颃","hao":"壕嚎豪毫郝好耗号浩貉蒿薅嗥嚆濠灏昊皓颢蚝","he":"呵喝荷菏核禾和何合盒阂河涸赫褐鹤贺诃劾壑嗬阖曷盍颌蚵翮","hei":"嘿黑","hen":"痕很狠恨","heng":"哼亨横衡恒蘅桁","hong":"轰哄烘虹鸿洪宏弘红黉訇讧荭蕻薨闳泓","hou":"喉侯猴吼厚候后堠後逅瘊篌糇鲎骺","hu":"呼乎忽瑚壶葫胡蝴狐糊湖弧虎唬护互沪户冱唿囫岵猢怙惚浒滹琥槲轷觳烀煳戽扈祜瓠鹕鹱虍笏醐斛","hua":"花哗华猾滑画划化话骅桦铧","huai":"槐徊怀淮坏踝","huan":"欢环桓缓换患唤痪豢焕涣宦幻郇奂萑擐圜獾洹浣漶寰逭缳锾鲩鬟","huang":"荒慌黄磺蝗簧皇凰惶煌晃幌恍谎隍徨湟潢遑璜肓癀蟥篁鳇","hui":"灰挥辉徽恢蛔回毁悔慧卉惠晦贿秽会烩汇讳诲绘诙茴荟蕙咴哕喙隳洄浍彗缋珲晖恚虺蟪麾","hun":"荤昏婚魂浑混诨馄阍溷","huo":"豁活伙火获或惑霍货祸劐藿攉嚯夥砉钬锪镬耠蠖","ji":"击圾基机畸稽积箕肌饥迹激讥鸡姬绩缉吉极棘辑籍集及急疾汲即嫉级挤几脊己蓟技冀季伎祭剂悸济寄寂计记既忌际妓继纪藉丌亟乩剞佶偈诘墼芨芰荠蒺蕺掎叽咭哜唧岌嵴洎彐屐骥畿玑楫殛戟戢赍觊犄齑矶羁嵇稷瘠虮笈笄暨跻跽霁鲚鲫髻麂","jia":"嘉枷夹佳家加荚颊贾甲钾假稼价架驾嫁茄郏葭岬浃迦珈戛胛恝铗镓痂瘕袷蛱笳袈跏","jian":"歼监坚尖笺间煎兼肩艰奸缄茧检柬碱硷拣捡简俭剪减荐鉴践贱见键箭件健舰剑饯渐溅涧建僭谏谫菅蒹搛囝湔蹇謇缣枧楗戋戬牮犍毽腱睑锏鹣裥笕翦趼踺鲣鞯","jiang":"僵姜将浆江疆蒋桨奖讲匠酱降茳洚绛缰犟礓耩糨豇","jiao":"蕉椒礁焦胶交郊浇骄娇搅铰矫侥脚狡角饺缴绞剿教酵轿较叫窖佼僬艽茭挢噍峤徼湫姣敫皎鹪蛟醮跤鲛","jie":"揭接皆秸街阶截劫节杰捷睫竭洁结解姐戒芥界借介疥诫届讦卩拮喈嗟婕孑桀碣疖颉蚧羯鲒骱","jin":"巾筋斤金今津襟紧锦仅谨进靳晋禁近烬浸尽劲卺荩堇噤馑廑妗缙瑾槿赆觐钅衿矜","jing":"荆兢茎睛晶鲸京惊精粳经井警景颈静境敬镜径痉靖竟竞净刭儆阱菁獍憬泾迳弪婧肼胫腈旌靓","jiong":"炯窘冂迥炅扃","jiu":"揪究纠玖韭久灸九酒厩救旧臼舅咎就疚僦啾阄柩桕鸠鹫赳鬏","ju":"桔鞠拘狙疽居驹菊局咀矩举沮聚拒据巨具距踞锯俱句惧炬剧倨讵苣苴莒菹掬遽屦琚椐榘榉橘犋飓钜锔窭裾趄醵踽龃雎鞫","juan":"捐鹃娟倦眷卷绢鄄狷涓桊蠲锩镌隽","jue":"嚼撅攫抉掘倔爵觉决诀绝厥劂谲矍蕨噘噱崛獗孓珏桷橛爝镢蹶觖","jun":"均菌钧军君峻俊竣浚郡骏捃皲麇","ka":"喀咖卡佧咔胩","kai":"开揩楷凯慨剀垲蒈忾恺铠锎锴","kan":"槛刊堪勘坎砍看侃莰戡龛瞰","kang":"康慷糠扛抗亢炕伉闶钪","kao":"考拷烤靠尻栲犒铐","ke":"坷苛柯棵磕颗科壳咳可渴克刻客课嗑岢恪溘骒缂珂轲氪瞌钶锞稞疴窠颏蝌髁","ken":"肯啃垦恳裉龈","keng":"坑吭铿","kong":"空恐孔控倥崆箜","kou":"抠口扣寇芤蔻叩眍筘","ku":"枯哭窟苦酷库裤刳堀喾绔骷","kua":"夸垮挎跨胯侉","kuai":"块筷侩快蒯郐哙狯脍","kuan":"宽款髋","kuang":"匡筐狂框矿眶旷况诓诳邝圹夼哐纩贶","kui":"亏盔岿窥葵奎魁馈愧溃馗匮夔隗蒉揆喹喟悝愦逵暌睽聩蝰篑跬","kun":"坤昆捆困悃阃琨锟醌鲲髡","kuo":"括扩廓阔蛞","la":"垃拉喇蜡腊辣啦剌邋旯砬瘌","lai":"莱来赖崃徕涞濑赉睐铼癞籁","lan":"蓝婪栏拦篮阑兰澜谰揽览懒缆烂滥岚漤榄斓罱镧褴","lang":"琅榔狼廊郎朗浪莨蒗啷阆锒稂螂","lao":"捞劳牢老佬姥酪烙涝潦唠崂栳铑铹痨耢醪","le":"乐肋了仂叻泐鳓","lei":"勒雷镭蕾磊累儡垒擂类泪羸诔嘞嫘缧檑耒酹","leng":"棱楞冷塄愣","li":"厘梨犁黎篱狸离漓理李里鲤礼莉荔吏栗丽厉励砾历利傈例俐痢立粒沥隶力璃哩俪俚郦坜苈莅蓠藜呖唳喱猁溧澧逦娌嫠骊缡枥栎轹戾砺詈罹锂鹂疠疬蛎蜊蠡笠篥粝醴跞雳鲡鳢黧","lia":"俩","lian":"联莲连镰廉怜涟帘敛脸链恋炼练蔹奁潋濂琏楝殓臁裢裣蠊鲢","liang":"粮凉梁粱良两辆量晾亮谅墚椋踉魉","liao":"撩聊僚疗燎寥辽撂镣廖料蓼尥嘹獠寮缭钌鹩","lie":"列裂烈劣猎冽埒捩咧洌趔躐鬣","lin":"琳林磷霖临邻鳞淋凛赁吝拎蔺啉嶙廪懔遴檩辚膦瞵粼躏麟","ling":"玲菱零龄铃伶羚凌灵陵岭领另令酃苓呤囹泠绫柃棂瓴聆蛉翎鲮","liu":"溜琉榴硫馏留刘瘤流柳六浏遛骝绺旒熘锍镏鹨鎏","long":"龙聋咙笼窿隆垄拢陇垅茏泷珑栊胧砻癃","lou":"楼娄搂篓漏陋偻蒌喽嵝镂瘘耧蝼髅","lu":"芦卢颅庐炉掳卤虏鲁麓碌露路赂鹿潞禄录陆戮垆撸噜泸渌漉逯璐栌橹轳辂辘氇胪镥鸬鹭簏舻鲈","luan":"峦挛孪滦卵乱脔娈栾鸾銮","lun":"抡轮伦仑沦纶论囵","luo":"萝螺罗逻锣箩骡裸落洛骆络倮蠃荦摞猡泺漯珞椤脶镙瘰雒","lv":"驴吕铝侣旅履屡缕虑氯律率滤绿捋闾榈膂稆褛","lve":"掠略锊","ma":"妈麻玛码蚂马骂嘛吗唛犸嬷杩蟆","mai":"埋买麦卖迈脉劢荬霾","man":"瞒馒蛮满蔓曼慢漫谩墁幔缦熳镘颟螨鳗鞔","mang":"芒茫盲氓忙莽邙漭硭蟒","mao":"猫茅锚毛矛铆卯茂冒帽貌贸袤茆峁泖瑁昴牦耄旄懋瞀蝥蟊髦","me":"么","mei":"玫枚梅酶霉煤没眉媒镁每美昧寐妹媚莓嵋猸浼湄楣镅鹛袂魅","men":"门闷们扪焖懑钔","meng":"萌蒙檬盟锰猛梦孟勐甍瞢懵朦礞虻蜢蠓艋艨","mi":"眯醚靡糜迷谜弥米秘觅泌蜜密幂芈冖谧蘼咪嘧猕汨宓弭脒祢敉糸縻麋","mian":"棉眠绵冕免勉娩缅面沔渑湎宀腼眄","miao":"苗描瞄藐秒渺庙妙喵邈缈杪淼眇鹋","mie":"蔑灭乜咩蠛篾","min":"民抿皿敏悯闽苠岷闵泯缗珉愍黾鳘","ming":"明螟鸣铭名命冥茗溟暝瞑酩","miu":"谬","mo":"摸摹蘑模膜磨摩魔抹末莫墨默沫漠寞陌谟茉蓦馍嫫殁镆秣瘼耱貊貘麽","mou":"谋牟某侔哞缪眸蛑鍪","mu":"拇牡亩姆母墓暮幕募慕木目睦牧穆仫坶苜沐毪钼","n":"嗯","na":"拿哪呐钠那娜纳捺肭镎衲","nai":"氖乃奶耐奈鼐艿萘柰","nan":"南男难喃囡楠腩蝻赧","nang":"囊攮囔馕曩","nao":"挠脑恼闹淖孬垴呶猱瑙硇铙蛲","ne":"呢讷疒","nei":"馁内","nen":"嫩恁","neng":"能","ni":"妮霓倪泥尼拟你匿腻逆溺伲坭猊怩昵旎睨铌鲵","nian":"蔫拈年碾撵捻念辗廿埝辇黏鲇鲶","niang":"娘酿","niao":"鸟尿茑嬲脲袅","nie":"捏聂孽啮镊镍涅陧蘖嗫颞臬蹑","nin":"您","ning":"柠狞凝宁拧泞佞咛甯聍","niu":"牛扭钮纽狃忸妞","nong":"脓浓农弄侬哝","nou":"耨","nu":"奴努怒弩胬孥驽","nuan":"暖","nuo":"挪懦糯诺傩搦喏锘","nv":"女恧钕衄","nve":"虐疟","o":"哦喔噢","ou":"欧鸥殴藕呕偶沤讴怄瓯耦","pa":"啪趴爬帕怕琶葩杷筢","pai":"拍排牌徘湃派俳蒎哌","pan":"攀潘盘磐盼畔判叛拚爿泮袢襻蟠蹒","pang":"乓庞旁耪胖彷滂逄螃","pao":"抛咆刨炮袍跑泡匏狍庖脬疱","pei":"呸胚培裴赔陪配佩沛辔帔旆锫醅霈","pen":"喷盆湓","peng":"砰抨烹澎彭蓬棚硼篷膨朋鹏捧碰堋嘭怦蟛","pi":"辟坯砒霹批披劈琵毗啤脾疲皮匹痞僻屁譬丕仳陴邳郫圮埤鼙芘擗噼庀淠媲纰枇甓睥罴铍癖疋蚍蜱貔","pian":"篇偏片骗谝骈犏胼翩蹁","piao":"飘漂瓢票剽嘌嫖缥殍瞟螵","pie":"撇瞥丿苤氕","pin":"拼频贫品聘姘嫔榀牝颦","ping":"乒坪苹萍平凭瓶评屏俜娉枰鲆","po":"泊坡泼颇婆破魄迫粕叵鄱珀钋钷皤笸","pou":"剖裒掊","pu":"脯扑铺仆莆葡菩蒲埔朴圃普浦谱曝瀑匍噗溥濮璞攴氆攵镤镨蹼","qi":"期欺栖戚妻七凄漆柒沏其棋奇歧畦崎脐齐旗祈祁骑起岂乞企启契砌器气迄弃汽泣讫亓俟圻芑芪萁萋葺蕲嘁屺岐汔淇骐绮琪琦杞桤槭耆祺憩碛颀蛴蜞綦綮蹊鳍麒","qia":"掐恰洽葜髂","qian":"牵扦钎铅千迁签仟谦乾黔钱钳前潜遣浅谴堑嵌欠歉倩佥阡凵芊芡茜掮岍悭慊骞搴褰缱椠肷愆钤虔箝","qiang":"枪呛腔羌墙蔷强抢丬戕嫱樯戗炝锖锵镪襁蜣羟跄","qiao":"橇锹敲悄桥瞧乔侨巧鞘撬翘峭俏窍劁诮谯荞愀憔缲樵硗跷鞒","qie":"切且怯窃郄惬妾挈锲箧","qin":"钦侵亲秦琴勤芹擒禽寝沁芩揿吣嗪噙溱檎锓螓衾","qing":"青轻氢倾卿清擎晴氰情顷请庆苘圊檠磬蜻罄箐謦鲭黥","qiong":"琼穷邛芎茕穹蛩筇跫銎","qiu":"秋丘邱球求囚酋泅俅巯犰逑遒楸赇虬蚯蝤裘糗鳅鼽","qu":"趋区蛆曲躯屈驱渠取娶龋趣去诎劬蕖蘧岖衢阒璩觑氍朐祛磲鸲癯蛐蠼麴瞿黢","quan":"圈颧权醛泉全痊拳犬券劝诠荃犭悛绻辁畎铨蜷筌鬈","que":"缺瘸却鹊榷确雀阕阙悫","qun":"裙群逡","ran":"然燃冉染苒蚺髯","rang":"瓤壤攘嚷让禳穰","rao":"饶扰绕荛娆桡","re":"惹热","ren":"壬仁人忍韧任认刃妊纫亻仞荏葚饪轫稔衽","reng":"扔仍","ri":"日","rong":"戎茸蓉荣融熔溶容绒冗嵘狨榕肜蝾","rou":"揉柔肉糅蹂鞣","ru":"茹蠕儒孺如辱乳汝入褥蓐薷嚅洳溽濡缛铷襦颥","ruan":"软阮朊","rui":"蕊瑞锐芮蕤枘睿蚋","run":"闰润","ruo":"若弱偌箬","sa":"撒洒萨卅仨挲脎飒","sai":"腮鳃塞赛噻","san":"三叁伞散馓毵糁","sang":"桑嗓丧搡磉颡","sao":"搔骚扫嫂埽缫臊瘙鳋","se":"瑟色涩啬铯穑","sen":"森","seng":"僧","sha":"莎砂杀刹沙纱傻啥煞厦唼歃铩痧裟霎鲨","shai":"筛晒酾","shan":"珊苫杉山删煽衫闪陕擅赡膳善汕扇缮剡讪鄯埏芟彡潸姗嬗骟膻钐疝蟮舢跚鳝","shang":"墒伤商赏晌上尚裳垧绱殇熵觞","shao":"梢捎稍烧芍勺韶少哨邵绍劭苕潲蛸筲艄","she":"奢赊蛇舌舍赦摄射慑涉社设厍佘猞滠歙畲麝","shen":"砷申呻伸身深娠绅神沈审婶甚肾慎渗什诜谂莘哂渖椹胂矧蜃","sheng":"声生甥牲升绳省盛剩胜圣嵊眚笙","shi":"匙师失狮施湿诗尸虱十石拾时食蚀实识史矢使屎驶始式示士世柿事拭誓逝势是嗜噬适仕侍释饰氏市恃室视试似谥埘莳蓍弑饣轼贳炻礻铈螫舐筮豉豕鲥鲺","shou":"收手首守寿授售受瘦兽扌狩绶艏","shu":"蔬枢梳殊抒输叔舒淑疏书赎孰熟薯暑曙署蜀黍鼠属术述树束戍竖墅庶数漱恕倏塾菽摅沭澍姝纾毹腧殳秫","shua":"刷耍唰","shuai":"摔衰甩帅蟀","shuan":"栓拴闩涮","shuang":"霜双爽孀","shui":"谁水睡税氵","shun":"吮瞬顺舜","shuo":"说硕朔烁蒴搠妁槊铄","si":"斯撕嘶思私司丝死肆寺嗣四饲巳厮兕厶咝汜泗澌姒驷纟缌祀锶鸶耜蛳笥","song":"松耸怂颂送宋讼诵凇菘崧嵩忪悚淞竦","sou":"搜艘擞嗽叟薮嗖嗾馊溲飕瞍锼螋","su":"苏酥俗素速粟僳塑溯宿诉肃夙谡蔌嗉愫涑簌觫稣","suan":"酸蒜算狻","sui":"虽隋随绥髓碎岁穗遂隧祟谇荽濉邃燧眭睢","sun":"孙损笋荪狲飧榫隼","suo":"蓑梭唆缩琐索锁所唢嗦嗍娑桫睃羧","ta":"塌他它她塔獭挞蹋踏闼溻遢榻铊趿鳎","tai":"胎苔抬台泰酞太态汰邰薹肽炱钛跆鲐","tan":"坍摊贪瘫滩坛檀痰潭谭谈坦毯袒碳探叹炭郯昙忐钽锬覃","tang":"汤塘搪堂棠膛唐糖倘躺淌趟烫傥帑饧溏瑭樘铴镗耥螗螳羰醣","tao":"掏涛滔绦萄桃逃淘陶讨套鼗啕洮韬饕","te":"特忒忑慝铽","teng":"藤腾疼誊滕","ti":"梯剔踢锑提题蹄啼体替嚏惕涕剃屉倜荑悌逖绨缇鹈裼醍","tian":"天添填田甜恬舔腆掭忝阗殄畋","tiao":"挑条迢眺跳佻祧窕蜩笤粜龆鲦髫","tie":"贴铁帖萜餮","ting":"厅听烃汀廷停亭庭挺艇莛葶婷梃町蜓霆","tong":"通桐酮瞳同铜彤童桶捅筒统痛佟僮仝茼嗵恸潼砼","tou":"偷投头透亠钭骰","tu":"凸秃突图徒途涂屠土吐兔堍荼菟钍酴","tuan":"湍团抟彖疃","tui":"推颓腿蜕褪退煺","tun":"吞屯臀氽饨暾豚","tuo":"拖托脱鸵陀驮驼椭妥拓唾乇佗坨庹沲沱柝橐砣箨酡跎鼍","wa":"挖哇蛙洼娃瓦袜佤娲腽","wai":"歪外崴","wan":"豌弯湾玩顽丸烷完碗挽晚皖惋宛婉万腕剜芄菀纨绾琬脘畹蜿","wang":"汪王亡枉网往旺望忘妄罔惘辋魍","wei":"威巍微危韦违桅围唯惟为潍维苇萎委伟伪尾纬未蔚味畏胃喂魏位渭谓尉慰卫偎诿隈圩葳薇囗帏帷嵬猥猬闱沩洧涠逶娓玮韪軎炜煨痿艉鲔","wen":"瘟温蚊文闻纹吻稳紊问刎阌汶玟璺雯","weng":"嗡翁瓮蓊蕹","wo":"挝蜗涡窝我斡卧握沃倭莴幄渥肟硪龌","wu":"巫呜钨乌污诬屋无芜梧吾吴毋武五捂午舞伍侮坞戊雾晤物勿务悟误兀仵阢邬圬芴呒唔庑怃忤浯寤迕妩婺骛杌牾焐鹉鹜痦蜈鋈鼯","xi":"昔熙析西硒矽晰嘻吸锡牺稀息希悉膝夕惜熄烯溪汐犀檄袭席习媳喜铣洗系隙戏细僖兮隰郗菥葸蓰奚唏徙饩阋浠淅屣嬉玺樨曦觋欷熹禊禧皙穸蜥螅蟋舄舾羲粞翕醯鼷","xia":"瞎虾匣霞辖暇峡侠狭下夏吓狎遐瑕柙硖罅黠","xian":"掀锨先仙鲜纤咸贤衔舷闲涎弦嫌显险现献县腺馅羡宪陷限线冼苋莶藓岘猃暹娴氙燹祆鹇痫蚬筅籼酰跣跹霰","xiang":"相厢镶香箱襄湘乡翔祥详想响享项巷橡像向象芗葙饷庠骧缃蟓鲞飨","xiao":"萧硝霄哮嚣销消宵淆晓小孝校肖啸笑效哓崤潇逍骁绡枭枵筱箫魈","xie":"楔些歇蝎鞋协挟携邪斜胁谐写械卸蟹懈泄泻谢屑偕亵勰燮薤撷獬廨渫瀣邂绁缬榭榍躞","xin":"薪芯锌欣辛新忻心信衅囟馨忄昕歆鑫","xing":"星腥猩惺兴刑型形邢行醒幸杏性姓陉荇荥擤悻硎","xiong":"兄凶胸匈汹雄熊","xiu":"休修羞朽嗅锈秀袖绣咻岫馐庥溴鸺貅髹","xu":"墟戌需虚嘘须徐许蓄酗叙旭序恤絮婿绪续吁诩勖蓿洫溆顼栩煦盱胥糈醑","xuan":"轩喧宣悬旋玄选癣眩绚儇谖萱揎泫渲漩璇楦暄炫煊碹铉镟痃","xue":"削靴薛学穴雪血谑泶踅鳕","xun":"勋熏循旬询寻驯巡殉汛训讯逊迅巽埙荀荨蕈薰峋徇獯恂洵浔曛窨醺鲟","ya":"压押鸦鸭呀丫芽牙蚜崖衙涯雅哑亚讶轧伢垭揠吖岈迓娅琊桠氩砑睚痖","yan":"焉咽阉烟淹盐严研蜒岩延言颜阎炎沿奄掩眼衍演艳堰燕厌砚雁唁彦焰宴谚验厣赝俨偃兖讠谳郾鄢芫菸崦恹闫湮滟妍嫣琰檐晏胭腌焱罨筵酽魇餍鼹","yang":"殃央鸯秧杨扬佯疡羊洋阳氧仰痒养样漾徉怏泱炀烊恙蛘鞅","yao":"邀腰妖瑶摇尧遥窑谣姚咬舀药要耀钥夭爻吆崾徭幺珧杳轺曜肴鹞窈繇鳐","ye":"椰噎耶爷野冶也页掖业叶曳腋夜液靥谒邺揶晔烨铘","yi":"一壹医揖铱依伊衣颐夷遗移仪胰疑沂宜姨彝椅蚁倚已乙矣以艺抑易邑屹亿役臆逸肄疫亦裔意毅忆义益溢诣议谊译异翼翌绎刈劓佚佾诒圯埸懿苡薏弈奕挹弋呓咦咿噫峄嶷猗饴怿怡悒漪迤驿缢殪轶贻欹旖熠眙钇镒镱痍瘗癔翊衤蜴舣羿翳酏黟","yin":"茵荫因殷音阴姻吟银淫寅饮尹引隐印胤鄞廴垠堙茚吲喑狺夤洇氤铟瘾蚓霪","ying":"英樱婴鹰应缨莹萤营荧蝇迎赢盈影颖硬映嬴郢茔莺萦蓥撄嘤膺滢潆瀛瑛璎楹媵鹦瘿颍罂","yo":"哟唷","yong":"拥佣臃痈庸雍踊蛹咏泳涌永恿勇用俑壅墉喁慵邕镛甬鳙饔","you":"幽优悠忧尤由邮铀犹油游酉有友右佑釉诱又幼卣攸侑莠莜莸尢呦囿宥柚猷牖铕疣蚰蚴蝣鱿黝鼬","yu":"迂淤于盂榆虞愚舆余俞逾鱼愉渝渔隅予娱雨与屿禹宇语羽玉域芋郁遇喻峪御愈欲狱育誉浴寓裕预豫驭禺毓伛俣谀谕萸蓣揄圄圉嵛狳饫馀庾阈鬻妪妤纡瑜昱觎腴欤於煜燠肀聿钰鹆鹬瘐瘀窬窳蜮蝓竽臾舁雩龉","yuan":"鸳渊冤元垣袁原援辕园员圆猿源缘远苑愿怨院垸塬掾沅媛瑗橼爰眢鸢螈箢鼋","yue":"曰约越跃岳粤月悦阅龠瀹樾刖钺","yun":"耘云郧匀陨允运蕴酝晕韵孕郓芸狁恽愠纭韫殒昀氲熨筠","za":"匝砸杂咋拶咂","zai":"栽哉灾宰载再在仔崽甾","zan":"咱攒暂赞瓒昝簪糌趱錾","zang":"赃脏葬奘驵臧","zao":"遭糟凿藻枣早澡蚤躁噪造皂灶燥唣","ze":"责择则泽仄赜啧帻迮昃笮箦舴","zei":"贼","zen":"怎谮","zeng":"增憎赠缯甑罾锃","zha":"扎喳渣札铡闸眨栅榨乍炸诈柞揸吒咤哳楂砟痄蚱齄","zhai":"摘斋宅窄债寨砦瘵","zhan":"瞻毡詹粘沾盏斩崭展蘸栈占战站湛绽谵搌旃","zhang":"长樟章彰漳张掌涨杖丈帐账仗胀瘴障仉鄣幛嶂獐嫜璋蟑","zhao":"招昭找沼赵照罩兆肇召爪诏啁棹钊笊","zhe":"遮折哲蛰辙者锗蔗这浙着谪摺柘辄磔鹧褶蜇赭","zhen":"珍斟真甄砧臻贞针侦枕疹诊震振镇阵帧圳蓁浈缜桢榛轸赈胗朕祯畛稹鸩箴","zheng":"蒸挣睁征狰争怔整拯正政症郑证诤峥徵钲铮筝","zhi":"芝枝支吱蜘知肢脂汁之织职直植殖执值侄址指止趾只旨纸志挚掷至致置帜峙制智秩稚质炙痔滞治窒卮陟郅埴芷摭帙夂忮彘咫骘栉枳栀桎轵轾贽胝膣祉祗黹雉鸷痣蛭絷酯跖踬踯豸觯","zhong":"中盅忠钟衷终种肿重仲众冢锺螽舯踵","zhou":"舟周州洲诌粥轴肘帚咒皱宙昼骤荮妯纣绉胄籀酎","zhu":"珠株蛛朱猪诸诛逐竹烛煮拄瞩嘱主著柱助蛀贮铸筑住注祝驻丶伫侏邾苎茱洙渚潴杼槠橥炷铢疰瘃竺箸舳翥躅麈","zhua":"抓","zhuai":"拽","zhuan":"专砖转撰赚篆啭馔颛","zhuang":"桩庄装妆撞壮状","zhui":"锥追赘坠缀惴骓缒隹","zhun":"谆准肫窀","zhuo":"捉拙卓桌茁酌啄灼浊倬诼擢浞涿濯禚斫镯","zi":"兹咨资姿滋淄孜紫籽滓子自渍字谘嵫姊孳缁梓辎赀恣眦锱秭耔笫粢趑觜訾龇鲻髭","zong":"鬃棕踪宗综总纵偬腙粽","zou":"邹走奏揍诹陬鄹驺楱鲰","zu":"租足卒族祖诅阻组俎镞","zuan":"钻纂攥缵躜","zui":"嘴醉最罪蕞","zun":"尊遵撙樽鳟","zuo":"琢昨左佐做作坐座阼唑怍胙祚"};
+const PINYIN_MAP = (() => {
+  const m = new Map();
+  for (const py of Object.keys(PINYIN_GROUPS)) {
+    for (const ch of PINYIN_GROUPS[py]) {
+      if (!m.has(ch)) m.set(ch, py);
+    }
+  }
+  return m;
+})();
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+
+// 名称拆成可匹配单元：汉字带全拼与首字母，英数原样，空白与标点不占位
+function buildUnits(text) {
+  const units = [];
+  for (let i = 0; i < text.length; i++) {
+    const raw = text[i];
+    const py = PINYIN_MAP.get(raw);
+    if (py) {
+      units.push({ch: raw, py, ini: py[0], idx: i});
+    } else if (/[a-z0-9]/.test(raw.toLowerCase())) {
+      const ch = raw.toLowerCase();
+      units.push({ch, py: ch, ini: ch, idx: i});
+    }
+  }
+  return units;
+}
+
+// 在单元序列上连续对齐一个 token（原字符 > 首字母 > 全拼），返回命中的单元区间
+function alignUnits(units, token) {
+  const n = units.length, m = token.length;
+  if (!m) return null;
+  const memo = new Map();
+  function can(i, j) {
+    if (j === m) return i;
+    if (i === n) return -1;
+    const key = i * (m + 1) + j;
+    if (memo.has(key)) return memo.get(key);
+    const u = units[i];
+    let res = -1;
+    if (u.ch === token[j]) {
+      res = can(i + 1, j + 1);                                 // 原字符直接匹配
+    }
+    if (res < 0 && u.py.length > 1 && u.ini === token[j]) {
+      res = can(i + 1, j + 1);                                 // 拼音首字母
+    }
+    if (res < 0 && token.startsWith(u.py, j)) {
+      res = can(i + 1, j + u.py.length);                       // 全拼
+    }
+    memo.set(key, res);
+    return res;
+  }
+  for (let s = 0; s < n; s++) {
+    const e = can(s, 0);
+    if (e > s) return {start: s, end: e};
+  }
+  return null;
+}
+
+function mergeRanges(ranges) {
+  if (ranges.length <= 1) return ranges;
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const out = [ranges[0].slice()];
+  for (const r of ranges.slice(1)) {
+    const last = out[out.length - 1];
+    if (r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+    else out.push(r.slice());
+  }
+  return out;
+}
+
+// 每个 token 都必须命中名称或包名；返回 {app, score, ranges}，ranges 为名称字符区间
+function matchApp(app, tokens) {
+  const units = app._units;
+  let score = 0;
+  const ranges = [];
+  for (const t of tokens) {
+    let best = null;
+    const hit = alignUnits(units, t);
+    if (hit) {
+      let s = (hit.start === 0 ? 100 : 60)
+            + (hit.end - hit.start)
+            + Math.max(0, 20 - hit.start);
+      if (units[hit.start].ch === t[0]) s += 8;
+      best = s;
+      ranges.push([units[hit.start].idx, units[hit.end - 1].idx + 1]);
+    }
+    const pkg = app.package.toLowerCase();
+    const idx = pkg.indexOf(t);
+    if (idx >= 0) {
+      let s = 15;
+      if (idx === 0) s += 15;
+      else if (pkg[idx - 1] === '.' || pkg[idx - 1] === '_') s += 10;
+      if (best === null || s > best) best = s;
+    }
+    if (best === null) return null;
+    score += best;
+  }
+  return {app, score, ranges: mergeRanges(ranges)};
+}
+
+function renderName(name, ranges) {
+  if (!ranges || !ranges.length) return escapeHtml(name);
+  let html = '', last = 0;
+  for (const [s, e] of ranges) {
+    html += escapeHtml(name.slice(last, s)) + '<mark>' + escapeHtml(name.slice(s, e)) + '</mark>';
+    last = e;
+  }
+  return html + escapeHtml(name.slice(last));
+}
+
+async function api(path, method='GET', body=null) {
+  const opt = { method, headers: {'Content-Type': 'application/json'} };
+  if (body) opt.body = JSON.stringify(body);
+  const r = await fetch(path, opt);
+  return r.json();
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ---------- 设置页 ---------- */
+function toggleSettings() {
+  const p = document.getElementById('settingsPage');
+  if (p.classList.contains('open')) p.classList.remove('open');
+  else p.classList.add('open');
+}
+
+function openSettings(tab) {
+  document.getElementById('settingsPage').classList.add('open');
+  if (tab) setSettingsTab(tab);
+}
+
+function setSettingsTab(name) {
+  document.querySelectorAll('.settings-tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-pane').forEach(p =>
+    p.classList.toggle('active', p.id === 'pane-' + name));
+}
+
+/* ---------- 瞬时提示（与连接状态分离，避免互相覆盖）---------- */
+let hintTimer = null;
+function setHint(text, ms = 6000) {
+  const el = document.getElementById('hintText');
+  el.textContent = text || '';
+  if (hintTimer) clearTimeout(hintTimer);
+  // ms 为 0 表示一直显示到下次提示（等待授权这类需要持续可见的状态）
+  if (text && ms > 0) hintTimer = setTimeout(() => { el.textContent = ''; }, ms);
+}
+
+/* ---------- 多设备上下文 ---------- */
+function deviceLabel(d) {
+  return d.model || d.serial;
+}
+
+function ctxOf(serial) {
+  if (!appCtx[serial]) appCtx[serial] = {apps: [], state: 'idle'};
+  return appCtx[serial];
+}
+
+// 该设备的快捷启动：优先专属列表，其次配置里的 "*" 默认值
+function quickFor(serial) {
+  const own = quickMap[serial];
+  if (Array.isArray(own)) return own.slice();
+  const def = quickMap['*'];
+  return Array.isArray(def) ? def.slice() : [];
+}
+
+// 把当前标签页设备的上下文铺到界面上
+function syncView() {
+  if (!activeDevice) {
+    allApps = []; quickList = []; appsLoadState = 'idle';
+    renderApps([]); renderQuick(); setCounts(0);
+    return;
+  }
+  const c = ctxOf(activeDevice);
+  allApps = c.apps;
+  appsLoadState = c.state;
+  quickList = quickFor(activeDevice);
+  renderApps(allApps);
+  renderQuick();
+  setCounts(allApps.length);
+}
+
+function renderTabs() {
+  const bar = document.getElementById('deviceTabs');
+  bar.classList.toggle('show', devices.length > 0);
+  bar.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const d of devices) {
+    const t = document.createElement('button');
+    t.className = 'device-tab' + (d.serial === activeDevice ? ' active' : '');
+    t.title = d.serial;
+    t.innerHTML = '<span class="tab-model">' + escapeHtml(deviceLabel(d)) + '</span>' +
+                  '<span class="tab-addr">' + escapeHtml((d.usb ? 'USB · ' : '') +
+                                                         (d.ip || d.serial)) + '</span>';
+    const x = document.createElement('span');
+    x.className = 'tab-close';
+    x.textContent = '×';
+    x.title = '断开该设备';
+    x.onclick = ev => { ev.stopPropagation(); disconnectDevice(d.serial); };
+    t.appendChild(x);
+    t.onclick = () => selectDevice(d.serial);
+    frag.appendChild(t);
+  }
+  bar.appendChild(frag);
+}
+
+function renderConnList() {
+  const box = document.getElementById('connList');
+  box.innerHTML = '';
+  if (!devices.length) {
+    box.innerHTML = '<div class="quick-empty">暂无已连接设备</div>';
+    return;
+  }
+  devices.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'conn-item';
+    row.innerHTML = '<span class="conn-name">' + escapeHtml(deviceLabel(d)) + '</span>' +
+                    '<span class="conn-addr">' + escapeHtml(d.serial) +
+                    (d.usb ? '　USB 有线' : '') + '</span>';
+    const b = document.createElement('button');
+    b.className = 'btn';
+    b.textContent = '断开';
+    b.onclick = () => disconnectDevice(d.serial);
+    row.appendChild(b);
+    box.appendChild(row);
+  });
+}
+
+function selectDevice(serial) {
+  if (serial === activeDevice) return;
+  activeDevice = serial;
+  devKeyApplied = '';
+  syncDevicesUI();
+  syncView();
+  const c = ctxOf(serial);
+  if (c.apps.length === 0 && c.state !== 'loading') loadApps();
+}
+
+async function disconnectDevice(serial) {
+  setHint('正在断开 ' + serial + ' …');
+  try { await api('/api/disconnect', 'POST', {device: serial}); } catch (e) {}
+  if (pendingAddr === serial) pendingAddr = null;
+  if (activeDevice === serial) activeDevice = null;
+  appCtx[serial] = {apps: [], state: 'idle'};
+  devKeyApplied = '';
+  await checkStatus();
+}
+
+/* ---------- 状态轮询：连接状态只由后端设备列表决定 ---------- */
+let waitingHint = false;      // 状态栏当前显示的是不是"等待授权/离线"提示（恢复后要清掉）
+
+async function checkStatus() {
+  let s;
+  try { s = await api('/api/status'); } catch (e) { return; }
+  devices = s.devices || [];
+  const pending = s.pending || [];      // 手机停在「允许 USB 调试」弹窗
+  const offline = s.offline || [];      // 掉线但 adb 还挂着
+  config = s.config || {};
+  quickMap = config.quick_launch || {};
+  const verEl = document.getElementById('appVersion');
+  if (verEl && s.version) verEl.textContent = 'v' + s.version;
+
+  const dot = document.getElementById('dot');
+  const st = document.getElementById('statusText');
+  // 已连接 > 等待授权 > 设备离线 > 未连接：等待授权/离线都属于"正在处理"，
+  // 不是失败，也不再显示成"未连接"，避免连没连看起来自相矛盾。
+  if (devices.length) {
+    dot.className = 'dot online';
+    st.textContent = devices.length === 1
+      ? '已连接 ' + deviceLabel(devices[0]) + (devices[0].usb ? '（USB 有线）' : '')
+      : '已连接 ' + devices.length + ' 台设备';
+    if (waitingHint) { waitingHint = false; setHint(''); }
+  } else if (pending.length) {
+    const p = pending[0];
+    dot.className = 'dot pending';
+    st.textContent = '等待手机授权：' + (p.ip || p.serial);
+    setHint('已连通 ' + (p.ip || p.serial) + '，正在等待手机授权：请在手机上点「允许 USB 调试」', 0);
+    waitingHint = true;
+  } else if (offline.length) {
+    const o = offline[0];
+    dot.className = 'dot pending';
+    st.textContent = '设备离线：' + (o.ip || o.serial);
+    setHint('设备 ' + (o.ip || o.serial) + ' 已离线（手机可能熄屏或换了网络），正在后台尝试恢复', 0);
+    waitingHint = true;
+  } else {
+    dot.className = 'dot offline';
+    st.textContent = '未连接';
+    if (waitingHint) { waitingHint = false; setHint(''); }
+  }
+
+  fillConfigInputs();
+  renderRecent();
+
+  // 等待授权的设备一旦在手机上点了「允许」，这里就会看到它，自动接上并清掉提示
+  if (pendingAddr) {
+    const dev = findDevice(pendingAddr);
+    const inList = list => list.some(x => x.serial === pendingAddr
+                                      || x.ip === pendingAddr.split(':')[0]);
+    if (dev) {
+      pendingAddr = null;
+      waitingHint = false;
+      selectDevice(dev.serial);
+      setHint('已连接 ' + deviceLabel(dev));
+      setScanItemState(dev.serial, '已连接', 'on');
+    } else if (inList(pending)) {
+      setScanItemState(pendingAddr, '等待手机授权…', 'wait');
+    } else if (inList(offline)) {
+      setScanItemState(pendingAddr, '设备离线，恢复中…', 'wait');
+    } else if (Date.now() - pendingSince > 120000) {
+      const expired = pendingAddr;
+      pendingAddr = null;
+      setScanItemState(expired, '等待超时', '');
+      setHint('等待设备就绪超时：请确认手机已解锁并点了「允许 USB 调试」后重试', 9000);
+    }
+  }
+
+  if (!devices.some(d => d.serial === activeDevice)) {
+    // 有 USB 直连的设备就优先用它：有线最稳、延迟最低，不用先折腾无线
+    const usbDev = devices.find(d => d.usb);
+    activeDevice = (usbDev || devices[0] || {}).serial || null;
+    devKeyApplied = '';
+    syncView();
+    if (activeDevice && ctxOf(activeDevice).state !== 'loading') loadApps();
+  }
+  syncDevicesUI();
+}
+
+function syncDevicesUI() {
+  const key = devices.map(d => d.serial).join(',') + '#' + activeDevice;
+  if (key === devKeyApplied) return;
+  devKeyApplied = key;
+  renderTabs();
+  renderConnList();
+}
+
+function fillConfigInputs() {
+  setVal('ip', config.ip);
+  setVal('port', config.port);
+  setVal('res_w', config.res_w);
+  setVal('res_h', config.res_h);
+  setVal('bitrate', config.bitrate);
+  setVal('scale', config.scale);
+  setVal('fps', config.fps);
+  setVal('max_size', config.max_size);
+  const am = document.getElementById('audio_mode');
+  if (am && document.activeElement !== am && config.audio_mode) am.value = config.audio_mode;
+  const vc = document.getElementById('video_codec');
+  if (vc && document.activeElement !== vc && config.video_codec) vc.value = config.video_codec;
+
+  const tray = document.getElementById('minimize_to_tray');
+  if (tray) tray.checked = !!config.minimize_to_tray;
+  const rc = document.getElementById('reconnect_enabled');
+  if (rc) rc.checked = config.reconnect_enabled !== false;   // 默认开启
+  const au = document.getElementById('autostart');
+  if (au) au.checked = !!config.autostart;
+
+  const presets = config.res_presets || [];
+  const sel = document.getElementById('resPreset');
+  const key = presets.join('|');
+  if (key !== presetKey) {
+    presetKey = key;
+    sel.innerHTML = '<option value="">选择预设</option>';
+    presets.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p; opt.textContent = p;
+      sel.appendChild(opt);
+    });
+  }
+}
+
+function setVal(id, v) {
+  const el = document.getElementById(id);
+  if (!el || document.activeElement === el) return;
+  const nv = (v === undefined || v === null) ? '' : String(v);
+  if (el.value !== nv) el.value = nv;
+}
+
+/* ---------- 连接 / 断开 ---------- */
+async function doConnect() {
+  const ip = document.getElementById('ip').value.trim();
+  const port = document.getElementById('port').value.trim() || '5555';
+  if (!ip) return alert('请输入 IP 地址');
+  const btn = document.getElementById('connectBtn');
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = '连接中…';
+  try {
+    await connectDevice(ip, port, {addr: ip + ':' + port});
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+// 在设备列表里按地址找一台真正可用的设备（serial 即 addr，或 IP 相同）
+function findDevice(addr, ip) {
+  return devices.find(d => d.serial === addr)
+      || (ip ? devices.find(d => d.ip === ip) : null);
+}
+
+async function connectDevice(ip, port, opts = {}) {
+  port = String(port || '5555');
+  const addr = ip + ':' + port;
+  const mark = opts.addr || addr;
+  setHint('正在连接 ' + addr + ' …', 20000);
+  let r;
+  try {
+    r = await api('/api/connect', 'POST', {ip, port});
+  } catch (e) {
+    setHint('连接 ' + addr + ' 失败：' + e, 10000);
+    setScanItemState(mark, '连接失败', '');
+    return null;
+  }
+  if (!r.success) {
+    const msg = ((r.out || '') + (r.err || '')).trim();
+    // adb 报失败也可能"其实已经连上/正在等授权"（比如已有 mDNS 自动连接在跑），
+    // 先核对一次真实状态，避免在等待过程中误报"连接失败"。
+    let st = null;
+    try { st = await api('/api/status'); } catch (e) {}
+    const dev2 = st ? (st.devices || []).find(d => d.serial === addr || d.ip === ip) : null;
+    const pend2 = st ? ((st.pending || []).concat(st.offline || []))
+                         .find(d => d.serial === addr || d.ip === ip) : null;
+    if (dev2) {
+      await api('/api/config', 'POST', {ip, port});
+      selectDevice(dev2.serial);
+      setHint('已连接 ' + deviceLabel(dev2));
+      setScanItemState(mark, '已连接', 'on');
+      return dev2.serial;
+    }
+    if (pend2) {
+      pendingAddr = addr;
+      pendingSince = Date.now();
+      setHint('已连通 ' + addr + '，正在等待手机授权：请在手机上点「允许 USB 调试」', 0);
+      setScanItemState(mark, '等待手机授权…', 'wait');
+      return null;
+    }
+    // 连接失败只用状态栏提示，不弹窗打断；失败原因仍然完整给出，方便排查
+    setHint('连接 ' + addr + ' 失败：' + (msg || '无法建立连接'), 12000);
+    setScanItemState(mark, '连接失败', '');
+    return null;
+  }
+  await api('/api/config', 'POST', {ip, port});
+  await checkStatus();
+  const dev = findDevice(addr, ip);
+  if (dev) {
+    pendingAddr = null;
+    selectDevice(dev.serial);
+    setHint('已连接 ' + deviceLabel(dev));
+    setScanItemState(mark, '已连接', 'on');
+    return dev.serial;
+  }
+  // TCP 已经通了，但设备还没出现在 adb 的可用设备里：几乎都是手机上那句
+  // 「允许 USB 调试」还没点。这是正常的等待过程，不是错误，所以不弹报错，
+  // 只在状态栏持续提示，等设备就绪后由 checkStatus 自动接上。
+  pendingAddr = addr;
+  pendingSince = Date.now();
+  waitingHint = true;
+  setHint('已连通 ' + addr + '，正在等待手机授权：请在手机上点「允许 USB 调试」', 0);
+  setScanItemState(mark, '等待手机授权…', 'wait');
+  return null;
+}
+
+async function doPair() {
+  const ip = document.getElementById('ip').value.trim();
+  const port = document.getElementById('pairPort').value.trim();
+  const code = document.getElementById('pairCode').value.trim();
+  if (!port || !code) return alert('请输入配对端口和配对码');
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '配对中...';
+  try {
+    const r = await api('/api/pair', 'POST', { ip, port, code });
+    if (r.success) { setHint('配对成功：现在点「连接」或到「最近连接」里连它', 9000); checkStatus(); }
+    else alert('配对失败: ' + r.out);
+  } catch (e) { alert('配对失败: ' + e); }
+  finally { btn.disabled = false; btn.textContent = '配对'; }
+}
+
+/* ---------- 扫码连接：电脑显示二维码，手机扫一下自动配对 + 连接 ---------- */
+let qrTimer = null;
+
+function stopQrTimer() {
+  if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
+}
+
+const QR_BTN_TEXT = '📱 扫码连接（推荐）';
+
+async function startQr() {
+  const btn = document.getElementById('qrBtn');
+  const hint = document.getElementById('qrHint');
+  if (qrTimer) {                       // 正在等待扫码：再点一次 = 取消
+    stopQrTimer();
+    try { await api('/api/qr/cancel', 'POST', {}); } catch (e) {}
+    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    document.getElementById('qrPanel').style.display = 'none';
+    hint.textContent = '已取消扫码配对';
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const r = await api('/api/qr/start', 'POST', {});
+    if (!r.ok) { hint.textContent = '二维码生成失败：' + (r.error || '未知原因'); return; }
+    document.getElementById('qrPanel').style.display = 'block';
+    document.getElementById('qrBox').innerHTML = r.svg || '';
+    document.getElementById('qrSub').textContent = r.svg
+      ? ('名称 ' + r.name + ' · 密码 ' + r.password)
+      : ('二维码组件不可用，请在手机上选「使用配对码配对设备」：密码 ' + r.password);
+    btn.textContent = '✕ 停止扫码配对';
+    hint.textContent = '已生成二维码，等待手机扫描…';
+    qrTimer = setInterval(pollQr, 1500);
+    pollQr();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pollQr() {
+  let s;
+  try { s = await api('/api/qr/status'); } catch (e) { return; }
+  const hint = document.getElementById('qrHint');
+  hint.textContent = s.message || '';
+  if (s.state === 'done') {
+    stopQrTimer();
+    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    setHint('扫码连接成功：' + (s.addr || ''), 9000);
+    await checkStatus();
+    const dev = devices.find(d => d.serial === s.addr)
+             || devices.find(d => s.addr && d.ip === s.addr.split(':')[0]);
+    if (dev) selectDevice(dev.serial);
+  } else if (['failed', 'timeout', 'idle'].includes(s.state)) {
+    stopQrTimer();
+    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    if (s.state !== 'idle' && s.message) setHint(s.message, 12000);
+  }
+}
+
+/* ---------- 局域网设备扫描（只探 5555，扫描阶段不连接）---------- */
+let autoScanned = false;
+
+function renderScanList(items) {
+  const box = document.getElementById('scanList');
+  box.innerHTML = '';
+  (items || []).forEach(it => {
+    const div = document.createElement('div');
+    div.className = 'scan-item' + (it.connected ? ' on' : (it.pairing || it.pending ? ' wait' : ''));
+    div.dataset.addr = it.addr;
+    div.title = it.source || '';
+    const tag = it.usb ? 'USB 有线'
+              : it.connected ? '已连接'
+              : it.pending ? '待授权 · 手机上点「允许」'
+              : it.pairing ? '待配对 · 点一下填地址'
+              : it.port_scan ? '端口扫描 · 点一下连接'
+              : '点一下连接';
+    div.innerHTML = '<span class="addr">' + escapeHtml(it.addr) + '</span>' +
+      '<span class="tag">' + tag + '</span>';
+    div.onclick = () => onScanClick(it);
+    box.appendChild(div);
+  });
+}
+
+// 扫描列表点一下就直接连，不再"填进输入框再让用户手动点连接"
+async function onScanClick(it) {
+  if (it.connected) {
+    selectDevice(it.addr);
+    setHint('已切换到 ' + it.addr);
+    return;
+  }
+  if (it.pairing) {
+    // 手机正停在「使用配对码配对设备」界面：展开「其它方式」并把地址填进配对输入框，
+    // 配对码还得看手机（配对协议由 adb 完成，扫码走上面的「扫码连接」）。
+    const adv = document.getElementById('advDetails');
+    if (adv) adv.open = true;
+    document.getElementById('ip').value = it.ip;
+    document.getElementById('pairPort').value = it.port;
+    document.getElementById('pairCode').focus();
+    setHint('已填入配对地址 ' + it.addr + '：请在手机上点「使用配对码配对设备」并输入手机显示的 6 位配对码', 0);
+    return;
+  }
+  const ip = it.ip || it.addr.split(':')[0];
+  const port = it.port || it.addr.split(':')[1] || '5555';
+  setScanItemState(it.addr, '连接中…', 'wait');
+  await connectDevice(ip, port, {addr: it.addr});
+}
+
+function setScanItemState(addr, text, cls) {
+  const div = document.querySelector('.scan-item[data-addr="' + addr + '"]');
+  if (!div) return;
+  const tag = div.querySelector('.tag');
+  if (tag) tag.textContent = text;
+  div.classList.toggle('on', cls === 'on');
+  div.classList.toggle('wait', cls === 'wait');
+}
+
+// auto=true 时静默扫描：不切按钮文案、只在唯一候选时自动连接
+async function discover(auto = false) {
+  const btn = document.getElementById('scanBtn');
+  const hint = document.getElementById('scanHint');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  document.getElementById('scanList').innerHTML = '';
+  btn.textContent = '扫描中…';
+  hint.textContent = '正在扫描局域网设备（只探测 5555 端口）…';
+  let target = null;
+  try {
+    const r = await api('/api/discover');
+    renderScanList(r.found);
+    const fresh = (r.found || []).filter(it => !it.connected);
+    if (!r.found.length) {
+      hint.textContent = '未发现可用设备：请确认手机已开启「无线调试」且与电脑在同一网络，然后重试';
+    } else if (auto && fresh.length === 1) {
+      target = fresh[0];
+    } else {
+      hint.textContent = '发现 ' + r.found.length + ' 个可用设备（耗时 ' + r.elapsed +
+                         's），点一下即可直接连接';
+    }
+  } catch (e) {
+    hint.textContent = '扫描失败: ' + e;
+  }
+  btn.disabled = false;
+  btn.textContent = '🔍 扫描局域网';
+  if (target) {
+    setScanItemState(target.addr, '连接中…', 'wait');
+    await connectDevice(target.ip, target.port, {addr: target.addr});
+  }
+}
+
+// 启动时若尚未连接，后台扫一次；只有一个候选就自动连上
+async function autoDiscover() {
+  if (autoScanned) return;
+  autoScanned = true;
+  try {
+    if (!devices.length) await discover(true);
+  } catch (e) {}
+}
+
+/* ---------- 深度搜索：局域网 + mDNS 先出结果，再对存活主机扫端口段 ---------- */
+// 后端是后台任务：/api/discover/deep 启动，然后每 700ms 轮询 /status 拿进度，
+// 界面能实时看到"扫到第几台 / 哪个 IP"，也不会因为扫描久而卡住。
+async function deepDiscover() {
+  const btn = document.getElementById('deepBtn');
+  const hint = document.getElementById('scanHint');
+  if (btn.disabled) return;
+  btn.disabled = true;
+  document.getElementById('scanList').innerHTML = '';
+  btn.textContent = '深度搜索中…';
+  hint.textContent = '正在搜索局域网设备 + mDNS（约 6 秒先出结果）…';
+  try {
+    let st = await api('/api/discover/deep');
+    while (st && st.running) {
+      renderScanList(st.found || []);
+      if (st.text) hint.textContent = st.text;
+      await sleep(700);
+      st = await api('/api/discover/deep/status');
+    }
+    const found = (st && st.found) || [];
+    renderScanList(found);
+    const parts = 'mDNS ' + (st.mdns_count || 0) + ' / 局域网 ' + (st.lan_count || 0) +
+                  (st.port_count ? ' / 端口扫描 ' + st.port_count : '');
+    if (st && st.error && !found.length) {
+      hint.textContent = st.error;
+    } else if (!found.length) {
+      hint.textContent = '没发现目标：请确认手机已打开「无线调试」或与电脑在同一局域网，然后重试';
+    } else {
+      const hasPair = found.some(x => x.pairing);
+      hint.textContent = '发现 ' + found.length + ' 个目标（' + parts +
+        '，耗时 ' + st.elapsed + 's）' +
+        (hasPair ? '；「待配对」的点一下会把地址填进「其它方式」里的首次配对' : '，点一下即可直接连接');
+    }
+  } catch (e) {
+    hint.textContent = '深度搜索失败: ' + e;
+  }
+  btn.disabled = false;
+  btn.textContent = '🧭 深度搜索';
+}
+
+/* ---------- USB 一键转无线 ---------- */
+async function usbToWifi() {
+  const btn = document.getElementById('usbBtn');
+  btn.disabled = true;
+  btn.textContent = '切换中…';
+  setHint('正在把手机切到无线模式（adb tcpip 5555）…', 0);
+  try {
+    const r = await api('/api/usb2wifi', 'POST', {});
+    if (r.ok) {
+      await checkStatus();
+      const dev = devices.find(d => d.serial === r.addr)
+               || devices.find(d => d.ip === (r.addr || '').split(':')[0]);
+      if (dev) selectDevice(dev.serial);
+      setHint('已连上 ' + r.addr + (r.note ? '（' + r.note + '）' : '') + '，现在可以拔掉数据线', 12000);
+    } else {
+      setHint('USB 转无线失败：' + (r.error || '未知原因'), 12000);
+    }
+  } catch (e) {
+    setHint('USB 转无线失败：' + e, 12000);
+  }
+  btn.disabled = false;
+  btn.textContent = '转无线';
+}
+
+/* ---------- 最近连接（最多 5 台，点一下直接连）---------- */
+let recentKey = '';
+
+function renderRecent() {
+  const box = document.getElementById('recentSection');
+  const list = document.getElementById('recentList');
+  const items = config.recent_devices || [];
+  box.style.display = items.length ? 'block' : 'none';
+  if (!items.length) { list.innerHTML = ''; recentKey = ''; return; }
+  const key = items.map(i => i.addr).join(',') + '#' + devices.map(d => d.serial).join(',');
+  if (key === recentKey) return;              // 每 3 秒轮询时不重建 DOM
+  recentKey = key;
+  list.innerHTML = '';
+  items.forEach(it => {
+    const on = devices.some(d => d.serial === it.addr);
+    const div = document.createElement('div');
+    div.className = 'scan-item' + (on ? ' on' : '');
+    div.dataset.addr = it.addr;
+    div.innerHTML = '<span class="addr">' +
+      escapeHtml((it.name ? it.name + ' · ' : '') + it.addr) + '</span>' +
+      '<span class="tag">' + (on ? '已连接' : '点一下连接') + '</span>';
+    div.onclick = () => {
+      if (on) selectDevice(it.addr);
+      else connectDevice(it.ip, it.port, {addr: it.addr});
+    };
+    list.appendChild(div);
+  });
+}
+
+async function loadApps(force = false) {
+  const serial = activeDevice;
+  if (!serial) { setHint('请先连接设备'); return; }
+  const c = ctxOf(serial);
+  if (c.state === 'loading') return;   // 同一设备扫描进行中，避免并发重复触发
+  c.state = 'loading';
+  if (serial === activeDevice) appsLoadState = 'loading';
+  setHint('正在加载应用列表…', 60000);
+  let ok = true;
+  try {
+    const r = await api('/api/apps?device=' + encodeURIComponent(serial) + (force ? '&force=1' : ''));
+    if (r.apps && r.apps.length) {
+      c.apps = r.apps;
+      c.apps.forEach(a => { a._units = buildUnits(a.name); });
+    }
+  } catch (e) {
+    ok = false;
+    setHint('应用列表加载失败：' + e);
+  }
+  c.state = 'done';                    // 一次性状态机：失败也不自动重扫，用户可手动刷新
+  if (serial === activeDevice) {
+    syncView();
+    if (ok) setHint('');
+  }
+}
+
+function iconImgError(img) {
+  // 素材库缺失时后端会转到在线源补齐（数秒），这里按 3s/6s/12s 重试；
+  // 最终仍失败则移除 img，露出首字母底色。
+  const delays = [3000, 6000, 12000];
+  const n = (parseInt(img.dataset.retry || '0', 10)) + 1;
+  if (n > delays.length) { img.remove(); return; }
+  img.dataset.retry = n;
+  setTimeout(function () {
+    if (!img.isConnected) return;
+    img.src = '/api/icon?pkg=' + encodeURIComponent(img.dataset.pkg) + '&t=' + Date.now();
+  }, delays[n - 1]);
+}
+
+function makeAppItem(app, nameHtml, isQuick = false) {
+  const div = document.createElement('div');
+  div.className = 'app-item';
+  const iconUrl = '/api/icon?pkg=' + encodeURIComponent(app.package);
+  div.innerHTML = `
+    <button class="app-add" data-pkg="${escapeHtml(app.package)}"></button>
+    <div class="app-icon">
+      <span class="app-icon-fallback">${escapeHtml(app.name.charAt(0))}</span>
+      <img class="app-icon-img" alt="" loading="lazy"
+           data-pkg="${escapeHtml(app.package)}" src="${iconUrl}"
+           onload="this.classList.add('loaded')"
+           onerror="iconImgError(this)">
+    </div>
+    <div class="app-name">${nameHtml}</div>
+  `;
+  const btn = div.querySelector('.app-add');
+  btn.dataset.quick = isQuick ? '1' : '';
+  updateAddBtn(btn);
+  btn.addEventListener('click', e => { e.stopPropagation(); toggleQuick(app.package); });
+  btn.addEventListener('dblclick', e => e.stopPropagation());
+  div.ondblclick = () => launchApp(app.package, app.name);
+  return div;
+}
+
+// 角标状态：快捷启动区显示 ×（移出），应用列表显示 ＋/✓（添加/已在其中）
+function updateAddBtn(btn) {
+  const pkg = btn.dataset.pkg;
+  const isQuick = btn.dataset.quick === '1';
+  if (isQuick) {
+    btn.className = 'app-add quick';
+    btn.textContent = '×';
+    btn.title = '移出快捷启动';
+  } else if (quickList.includes(pkg)) {
+    btn.className = 'app-add on';
+    btn.textContent = '✓';
+    btn.title = '已在快捷启动，点击移除';
+  } else {
+    btn.className = 'app-add';
+    btn.textContent = '＋';
+    btn.title = '添加到快捷启动';
+  }
+}
+
+function findApp(pkg) {
+  return allApps.find(a => a.package === pkg) || {name: pkg, package: pkg};
+}
+
+function renderQuick() {
+  const grid = document.getElementById('quickGrid');
+  const empty = document.getElementById('quickEmpty');
+  grid.innerHTML = '';
+  document.getElementById('quickCount').textContent = quickList.length ? quickList.length + ' 个' : '';
+  if (!quickList.length) {
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  const frag = document.createDocumentFragment();
+  for (const pkg of quickList) {
+    const app = findApp(pkg);
+    frag.appendChild(makeAppItem(app, escapeHtml(app.name), true));
+  }
+  grid.appendChild(frag);
+}
+
+async function toggleQuick(pkg) {
+  if (!activeDevice) return;
+  const i = quickList.indexOf(pkg);
+  if (i >= 0) quickList.splice(i, 1);
+  else quickList.push(pkg);
+  quickMap[activeDevice] = quickList.slice();   // 快捷启动按设备各存一份
+  renderQuick();
+  document.querySelectorAll('#appsGrid .app-add').forEach(updateAddBtn);
+  await api('/api/config', 'POST', { quick_launch: quickMap });
+}
+
+function toggleDrawer() {
+  drawerCollapsed = !drawerCollapsed;
+  document.getElementById('appsDrawer').classList.toggle('collapsed', drawerCollapsed);
+  localStorage.setItem('drawerCollapsed', drawerCollapsed ? '1' : '0');
+}
+
+function initDrawer() {
+  drawerCollapsed = localStorage.getItem('drawerCollapsed') === '1';
+  document.getElementById('appsDrawer').classList.toggle('collapsed', drawerCollapsed);
+}
+
+function setCounts(n) {
+  document.getElementById('appCount').textContent = n + ' 个应用';
+  document.getElementById('drawerCount').textContent = '共 ' + n + ' 个';
+}
+
+function renderApps(apps) {
+  const grid = document.getElementById('appsGrid');
+  grid.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  apps.forEach(app => frag.appendChild(makeAppItem(app, escapeHtml(app.name))));
+  grid.appendChild(frag);
+  document.getElementById('emptyHint').style.display = 'none';
+}
+
+function renderResults(items) {
+  const grid = document.getElementById('appsGrid');
+  grid.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  items.forEach(item => frag.appendChild(makeAppItem(item.app, renderName(item.app.name, item.ranges))));
+  grid.appendChild(frag);
+}
+
+function filterApps() {
+  const input = document.getElementById('search');
+  const kw = input.value.trim().toLowerCase();
+  document.getElementById('searchClear').classList.toggle('show', kw.length > 0);
+  // 搜索时自动展开抽屉，保证结果可见
+  if (kw && drawerCollapsed) {
+    document.getElementById('appsDrawer').classList.remove('collapsed');
+  }
+  const hint = document.getElementById('emptyHint');
+  if (!kw) {
+    renderApps(allApps);
+    setCounts(allApps.length);
+    return;
+  }
+  const tokens = kw.split(/\s+/).filter(Boolean);
+  const results = [];
+  for (const app of allApps) {
+    const m = matchApp(app, tokens);
+    if (m) results.push(m);
+  }
+  results.sort((a, b) =>
+    b.score - a.score ||
+    a.app.name.toLowerCase().localeCompare(b.app.name.toLowerCase())
+  );
+  renderResults(results);
+  setCounts(results.length);
+  hint.style.display = results.length ? 'none' : 'block';
+}
+
+function clearSearch() {
+  const input = document.getElementById('search');
+  input.value = '';
+  filterApps();
+  input.focus();
+}
+
+// 快捷键：/ 或 Ctrl/Cmd+F 聚焦搜索，Esc 清空
+document.addEventListener('keydown', e => {
+  const input = document.getElementById('search');
+  const typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    input.focus();
+    input.select();
+  } else if (!typing && e.key === '/') {
+    e.preventDefault();
+    input.focus();
+  } else if (typing && e.key === 'Escape' && document.activeElement === input) {
+    if (input.value) { clearSearch(); } else { input.blur(); }
+  }
+});
+
+async function launchApp(pkg, name) {
+  if (!activeDevice) return alert('请先连接设备');
+  setHint('正在打开 ' + name, 8000);
+  try {
+    const r = await api('/api/launch?device=' + encodeURIComponent(activeDevice) +
+                        '&pkg=' + encodeURIComponent(pkg));
+    if (r && r.focused) {
+      // 同一个应用已经在投屏：后端没有重复拉起，只把已有窗口唤到了前台
+      setHint('「' + name + '」已在投屏中，已切到该窗口', 5000);
+    } else if (r && r.ok === false) { showDiag('投屏启动失败', r.error); }
+  } catch (e) { console.error(e); }
+}
+
+async function launchDesktop() {
+  if (!activeDevice) return alert('请先连接设备');
+  setHint('正在启动镜像桌面…', 8000);
+  try {
+    const r = await api('/api/desktop?device=' + encodeURIComponent(activeDevice));
+    if (r && r.ok === false) showDiag('镜像桌面启动失败', r.error);
+  } catch (e) { alert('启动失败: ' + e); }
+}
+
+// 诊断结果直接显示在设置页；诊断完成后弹出原生「另存为」，由用户自己选择报告保存位置。
+let lastDiagText = '';
+
+function showDiag(title, text) {
+  const box = document.getElementById('diagBox');
+  box.style.display = 'block';
+  lastDiagText = (title ? title + '\n\n' : '') + (text || '(无详细信息)');
+  box.textContent = lastDiagText;
+  openSettings('diag');
+}
+
+// 保存文件：优先走 pywebview 暴露的原生「另存为」对话框（pywebview.api.save_text），
+// 在普通浏览器里退回 Blob 下载 —— 后端只提供文本，保存位置一律由用户决定。
+function pywebviewReady() {
+  return new Promise(resolve => {
+    if (window.pywebview && window.pywebview.api) return resolve(true);
+    window.addEventListener('pywebviewready', () => resolve(true), { once: true });
+    setTimeout(() => resolve(!!(window.pywebview && window.pywebview.api)), 2500);
+  });
+}
+
+async function saveTextFile(defaultName, text) {
+  try {
+    await pywebviewReady();
+    const apiObj = window.pywebview && window.pywebview.api;
+    if (apiObj && apiObj.save_text) {
+      const r = await apiObj.save_text(defaultName, text);
+      if (r && r.ok) return r.path;
+      if (r && r.canceled) return '';                 // 用户取消
+      if (r && r.error) return '保存失败: ' + r.error;
+    }
+  } catch (e) { /* 落到下面的下载兜底 */ }
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = defaultName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  return '已下载: ' + defaultName;
+}
+
+function fileStamp() {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+async function runDiag(deep) {
+  const box = document.getElementById('diagBox');
+  box.style.display = 'block';
+  box.textContent = deep ? '正在做完整诊断（会实际拉起一次 scrcpy 扫应用，约需 10-60 秒）…' : '正在自检…';
+  try {
+    const r = await api('/api/diag' + (deep ? '?deep=1' : ''));
+    lastDiagText = r.text || '(无结果)';
+  } catch (e) {
+    lastDiagText = '诊断失败: ' + e;
+  }
+  box.textContent = lastDiagText;
+  // 诊断完成后由用户选择报告保存位置
+  const saved = await saveTextFile(`快投_诊断_${fileStamp()}.txt`, lastDiagText);
+  if (saved) setHint('诊断报告已保存到：' + saved, 12000);
+}
+
+async function saveReport() {
+  const box = document.getElementById('diagBox');
+  if (!lastDiagText) { setHint('请先运行「环境自检」或「完整诊断」'); return; }
+  box.style.display = 'block';
+  const saved = await saveTextFile(`快投_诊断_${fileStamp()}.txt`, lastDiagText);
+  if (saved) setHint('诊断报告已保存到：' + saved, 12000);
+}
+
+// 导出日志：汇总投屏 / 扫描 / 错误日志，同样由用户选择保存位置
+async function exportLog() {
+  let text;
+  try {
+    const r = await api('/api/log');
+    text = r.text || '(暂无日志)';
+  } catch (e) { setHint('读取日志失败: ' + e); return; }
+  const saved = await saveTextFile(`快投_日志_${fileStamp()}.txt`, text);
+  if (saved) setHint('日志已导出到：' + saved, 12000);
+}
+
+// 主页「↻ 刷新」：只重扫当前设备的应用列表，不弹窗打断
+async function refreshApps(ev) {
+  if (ev) ev.stopPropagation();          // 别把抽屉一起展开/收起
+  if (!activeDevice) { setHint('请先连接设备'); return; }
+  setHint('正在重新扫描 ' + deviceLabel(devices.find(d => d.serial === activeDevice) || {}) + ' 的应用列表…', 0);
+  await loadApps(true);
+}
+
+// 托盘开关：写进配置，后端据此启停托盘图标
+async function saveTray(on) {
+  config.minimize_to_tray = !!on;
+  await api('/api/config', 'POST', { minimize_to_tray: !!on });
+  setHint(on ? '已开启：点关闭会缩小到托盘，右键托盘图标可重新打开或退出'
+             : '已关闭：点关闭将直接退出应用', 9000);
+}
+
+// 掉线自动重连开关（默认开启）
+async function saveReconnect(on) {
+  config.reconnect_enabled = !!on;
+  await api('/api/config', 'POST', { reconnect_enabled: !!on });
+  setHint(on ? '已开启掉线自动重连（间隔逐次拉长，最多试 10 次）'
+             : '已关闭掉线自动重连', 9000);
+}
+
+// 开机自启动：开启时同时打开「缩小到托盘」，开机后静默驻留托盘
+async function saveAutostart(on) {
+  config.autostart = !!on;
+  const body = { autostart: !!on };
+  if (on) { body.minimize_to_tray = true; config.minimize_to_tray = true; }
+  const tray = document.getElementById('minimize_to_tray');
+  if (tray) tray.checked = !!config.minimize_to_tray;
+  let r = null;
+  try { r = await api('/api/config', 'POST', body); } catch (e) {}
+  const res = r && r.autostart;
+  if (res && res.ok === false) setHint('写入开机启动项失败：' + (res.error || '未知原因'), 12000);
+  else setHint(on ? '已开启开机自启动：开机后静默启动，只在托盘待命'
+                  : '已关闭开机自启动', 9000);
+}
+
+async function saveConfig() {
+  const cfg = {
+    ip: document.getElementById('ip').value,
+    port: document.getElementById('port').value,
+    res_w: document.getElementById('res_w').value,
+    res_h: document.getElementById('res_h').value,
+    bitrate: document.getElementById('bitrate').value,
+    scale: document.getElementById('scale').value,
+    fps: document.getElementById('fps').value,
+    video_codec: document.getElementById('video_codec').value,
+    max_size: document.getElementById('max_size').value,
+    audio_mode: document.getElementById('audio_mode').value
+  };
+  Object.assign(config, cfg);
+  await api('/api/config', 'POST', cfg);
+}
+
+function applyPreset(val) {
+  if (!val) return;
+  const [w, h] = val.split('x');
+  document.getElementById('res_w').value = w;
+  document.getElementById('res_h').value = h;
+  saveConfig();
+}
+
+async function savePreset() {
+  const w = document.getElementById('res_w').value.trim();
+  const h = document.getElementById('res_h').value.trim();
+  if (!w || !h) return alert('请先输入宽高');
+  const preset = `${w}x${h}`;
+  const s = await api('/api/status');
+  const presets = s.config.res_presets || [];
+  if (!presets.includes(preset)) {
+    presets.push(preset);
+    await api('/api/config', 'POST', {res_presets: presets});
+    alert('已保存'); presetKey = ''; checkStatus();
+  } else alert('已存在');
+}
+
+async function deletePreset() {
+  const val = document.getElementById('resPreset').value;
+  if (!val) return alert('请先选要删的预设');
+  const s = await api('/api/status');
+  const presets = (s.config.res_presets || []).filter(p => p !== val);
+  await api('/api/config', 'POST', {res_presets: presets});
+  presetKey = '';
+  checkStatus();
+}
+
+initDrawer();
+renderQuick();
+// 状态每 3 秒轮询一次：连接状态始终以 adb 实际在线的设备为准，不再依赖界面文案
+setInterval(checkStatus, 3000);
+checkStatus().then(autoDiscover);   // 未连接时启动后台扫描一次
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# 构建产物（体积大且可随时重建，不入库）
+build/
+dist/
+.build/
+*.manifest
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 运行时数据（程序会自动生成，属于用户本机状态而非源码）
+apps_cache.json
+scrcpy_launch.log
+*.log
+
+# 打包中间产物
+KuaitouBuild.spec.bak
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

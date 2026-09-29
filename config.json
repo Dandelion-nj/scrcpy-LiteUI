@@ -1,0 +1,17 @@
+{
+  "ip": "172.19.163.3",
+  "port": "5555",
+  "res_w": "1080",
+  "res_h": "2400",
+  "res_presets": [
+    "720x1280",
+    "1080x2400",
+    "1440x3200"
+  ],
+  "bitrate": "8",
+  "scale": "1.0",
+  "fps": "60",
+  "audio_mode": "phone",
+  "quick_launch": {},
+  "minimize_to_tray": false
+}
