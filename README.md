@@ -38,8 +38,11 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 
 ## 直接使用
 
-从 [Releases](https://github.com/Dandelion-nj/scrcpy-LiteUI/releases) 下载 `快投.exe`，
+从 [Releases](https://github.com/Dandelion-nj/scrcpy-LiteUI/releases) 下载最新的 exe，
 单文件便携版，无需安装，双击即可运行。
+
+> 发布页里显示的名字是「快投.exe」，但 GitHub 的发布资产不支持中文文件名
+> （会被平台清成 `default.exe`），所以实际下载下来的文件名是 `Kuaitou-v1.3.0.exe`。
 
 也可以按下方说明从源码自行打包。
 
