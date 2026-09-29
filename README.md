@@ -38,9 +38,10 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 
 ## 直接使用
 
-目前仓库尚未发布 Release。请按下方说明从源码打包，或自行获取打包产物。
+从 [Releases](https://github.com/Dandelion-nj/scrcpy-LiteUI/releases) 下载 `快投.exe`，
+单文件便携版，无需安装，双击即可运行。
 
-打包后的 `快投.exe` 为单文件便携版，无需安装，双击即可运行。
+也可以按下方说明从源码自行打包。
 
 ## 从源码运行
 
@@ -63,7 +64,7 @@ py -3.12 -m venv .build\venv
 ```powershell
 .build\venv\Scripts\python.exe -m pip install pyinstaller
 .build\venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --noconsole `
-  --icon appicon.ico --name KuaitouBuild `
+  --icon appicon.ico --name 快投 `
   --hidden-import pystray._win32 `
   --hidden-import qrcode --hidden-import qrcode.image.svg `
   --add-data "index.html;." --add-data "config.json;." --add-data "appicon.ico;." `
@@ -71,7 +72,8 @@ py -3.12 -m venv .build\venv
   launcher_server.py
 ```
 
-产物在 `dist\KuaitouBuild.exe`。打包参数同样记录在 `KuaitouBuild.spec` 中。
+产物在 `dist\快投.exe`。打包参数同样记录在 `KuaitouBuild.spec` 中（直接
+`.build\venv\Scripts\python.exe -m PyInstaller --noconfirm --clean KuaitouBuild.spec` 亦可）。
 
 ## 项目结构
 
