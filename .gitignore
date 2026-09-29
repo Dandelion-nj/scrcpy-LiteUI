@@ -23,5 +23,6 @@ KuaitouBuild.spec.bak
 # 编辑器 / 系统
 .vscode/
 .idea/
+.trae/
 Thumbs.db
 desktop.ini
