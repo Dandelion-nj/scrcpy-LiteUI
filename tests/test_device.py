@@ -815,6 +815,7 @@ def test_launch_desktop_boosts_before_launch_then_restores(monkeypatch):
     monkeypatch.setattr(device, "load_config", lambda: {"audio_mode": "pc"})
     monkeypatch.setattr(device, "_close_child_log", lambda pid: None)
     monkeypatch.setattr(device, "_BOOST_RECHECKS", ())   # 投屏后的复查另有专门用例，这里别留后台线程
+    monkeypatch.setattr(device, "_wait_window", lambda proc, timeout=15: None)   # 别真去遍历窗口
     proc = _FakeProc()
     seen = {}
 
@@ -843,6 +844,7 @@ def test_launch_desktop_leaves_volume_alone_in_phone_mode(monkeypatch):
     monkeypatch.setattr(device, "load_config", lambda: {"audio_mode": "phone"})
     monkeypatch.setattr(device, "_close_child_log", lambda pid: None)
     monkeypatch.setattr(device, "_BOOST_RECHECKS", ())
+    monkeypatch.setattr(device, "_wait_window", lambda proc, timeout=15: None)
     proc = _FakeProc()
     seen = {}
 
@@ -854,3 +856,91 @@ def test_launch_desktop_leaves_volume_alone_in_phone_mode(monkeypatch):
     device.launch_desktop("V2324A")
     assert "--no-audio" in seen["cmd"]
     assert adb.volume_set_calls == []
+
+
+# ---------- 投屏窗口：位置记忆 / 置顶 / 标题 ----------
+# 窗口位置存的是逻辑坐标（Windows 报给我们的那套），给 scrcpy 时要换算成物理像素；
+# 换过显示器后旧坐标可能已经在屏幕外，那时宁可让 scrcpy 自己挑位置。
+
+def _cmd(monkeypatch, cfg=None, **kwargs):
+    """按给定配置拼一条投屏命令（不碰真的 scrcpy / adb）。"""
+    monkeypatch.setattr(device, "load_config", lambda: dict(cfg or {}))
+    monkeypatch.setattr(device, "_pc_dpi", lambda: 96)
+    return device.build_scrcpy_cmd(**kwargs)
+
+
+def test_window_args_use_saved_position(monkeypatch):
+    monkeypatch.setattr(device, "_screen_scale", lambda: 2.0)
+    monkeypatch.setattr(device, "_pos_reachable", lambda x, y: True)
+    # 配置里存的是逻辑坐标，scrcpy 要物理像素：200% 缩放下要乘 2
+    assert device._window_args({"window_x": "427", "window_y": "289"}) == \
+        ["--window-x=854", "--window-y=578"]
+
+
+def test_window_args_skip_when_nothing_saved(monkeypatch):
+    monkeypatch.setattr(device, "_screen_scale", lambda: 1.0)
+    assert device._window_args({}) == []
+    assert device._window_args({"window_x": "", "window_y": ""}) == []
+    assert device._window_args({"window_x": "abc", "window_y": "1"}) == []
+
+
+def test_window_args_skip_when_off_screen(monkeypatch):
+    """换过显示器 / 改过分辨率后旧坐标已经在屏幕外：不能再沿用，否则窗口开在看不见的地方。"""
+    monkeypatch.setattr(device, "_screen_scale", lambda: 1.0)
+    monkeypatch.setattr(device, "_pos_reachable", lambda x, y: False)
+    assert device._window_args({"window_x": "5000", "window_y": "3000"}) == []
+
+
+def test_build_cmd_puts_title_on_app_mirroring(monkeypatch):
+    """镜像应用：标题栏写应用名，别只显示 scrcpy。"""
+    cmd = _cmd(monkeypatch, pkg="com.tencent.mm", title="微信")
+    assert "--window-title=微信" in cmd
+    assert "--start-app=com.tencent.mm" in cmd
+
+
+def test_build_cmd_has_no_title_for_desktop(monkeypatch):
+    cmd = _cmd(monkeypatch)
+    assert not any(a.startswith("--window-title") for a in cmd)
+
+
+def test_build_cmd_always_on_top_switch(monkeypatch):
+    assert "--always-on-top" in _cmd(monkeypatch, {"always_on_top": True})
+    assert "--always-on-top" not in _cmd(monkeypatch, {"always_on_top": False})
+    assert "--always-on-top" not in _cmd(monkeypatch)        # 没配过 → 默认不置顶
+
+
+def test_build_cmd_keeps_native_titlebar(monkeypatch):
+    """必须保留原生标题栏：拖边缩放 / 双击最大化 / 系统菜单都靠它。
+
+    winbar 现在是在原生标题栏上叠加按钮，不能再传 --window-borderless —— 那会换成
+    WS_POPUP 窗口，系统不给缩放边框，拖边完全不改窗口尺寸。
+    """
+    assert "--window-borderless" not in _cmd(monkeypatch, pkg="com.tencent.mm")
+
+
+def test_launch_desktop_keeps_native_titlebar(monkeypatch):
+    """镜像桌面同样保留原生标题栏（靠 --window-title 给标题），并挂上叠加按钮。"""
+    monkeypatch.setattr(device, "load_config", lambda: {})
+    monkeypatch.setattr(device, "_close_child_log", lambda pid: None)
+    monkeypatch.setattr(device, "_BOOST_RECHECKS", ())
+    monkeypatch.setattr(device, "_wait_window", lambda proc, timeout=15: None)
+    attached = {}
+    monkeypatch.setattr(device.winbar, "attach",
+                        lambda proc, **kw: attached.update(kw) or attached)
+    proc = _FakeProc()
+    seen = {}
+
+    def fake_spawn(cmd, tag="scrcpy"):
+        seen["cmd"] = cmd
+        return proc
+
+    monkeypatch.setattr(device, "_spawn", fake_spawn)
+    device.launch_desktop("V2324A")
+    assert "--window-borderless" not in seen["cmd"]
+    assert "--window-title=镜像桌面" in seen["cmd"]
+    proc.finish()
+    deadline = time.time() + 5
+    while not attached and time.time() < deadline:
+        time.sleep(0.01)
+    assert "title" not in attached                  # 新的 attach 不再自绘整条栏
+    assert attached.get("always_on_top") is None    # 没配过 → 默认不置顶

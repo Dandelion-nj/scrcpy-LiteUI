@@ -650,7 +650,7 @@ mark {
           <button class="btn" id="scanBtn" onclick="discover()">🔍 扫描局域网</button>
           <button class="btn" id="deepBtn" onclick="deepDiscover()">🧭 深度搜索</button>
         </div>
-        <div class="scan-hint" id="scanHint">「扫描」查同网段 5555 端口；「深度搜索」= 局域网 + mDNS + 端口扫描（30000~50000，多线程），能发现跨网段 / 随机端口的设备，较慢但最全。插上数据线会自动用 USB 有线。</div>
+        <div class="scan-hint" id="scanHint">「扫描」查同网段 5555 端口；「深度搜索」= 局域网 + mDNS + 端口扫描（30000~50000，多线程），能发现跨网段 / 随机端口的设备，较慢但最全（搜索中再点一下可随时停止）。插上数据线会自动用 USB 有线。</div>
         <div class="scan-list" id="scanList"></div>
       </div>
 
@@ -775,6 +775,20 @@ mark {
           </div>
           <label class="switch">
             <input type="checkbox" id="minimize_to_tray" onchange="saveTray(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">投屏窗口</div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">投屏窗口置顶</div>
+            <div class="settings-item-desc">投屏窗口始终压在其他窗口上面，适合一边看着手机画面一边在电脑上干别的；对「镜像应用」和「镜像桌面」都生效。窗口位置会被记住，下次投屏还开在原来的地方。投屏窗口的标题栏上还叠着一个 📌 置顶按钮，点它就能当场切换，不用回来改这里。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="always_on_top" onchange="saveAlwaysOnTop(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -1235,6 +1249,8 @@ function fillConfigInputs() {
 
   const tray = document.getElementById('minimize_to_tray');
   if (tray) tray.checked = !!config.minimize_to_tray;
+  const aot = document.getElementById('always_on_top');
+  if (aot) aot.checked = !!config.always_on_top;
   const rc = document.getElementById('reconnect_enabled');
   if (rc) rc.checked = config.reconnect_enabled !== false;   // 默认开启
   const au = document.getElementById('autostart');
@@ -1564,13 +1580,23 @@ async function deepPoll(onProgress) {
   return st;
 }
 
+// 深度搜索最长要跑两分多钟，所以按钮是「开始 / 停止」两用：搜索期间再点一下就是停止，
+// 已找到的结果保留（和后端返回的 canceled 标记一起显示）。
+let deepBusy = false;
+
 async function deepDiscover() {
   const btn = document.getElementById('deepBtn');
   const hint = document.getElementById('scanHint');
-  if (btn.disabled) return;
-  btn.disabled = true;
+  if (deepBusy) {
+    btn.disabled = true;
+    btn.textContent = '正在停止…';
+    try { await api('/api/discover/deep/stop', 'POST', {}); } catch (e) {}
+    return;                       // 收尾仍由下面那轮等待负责
+  }
+  deepBusy = true;
   document.getElementById('scanList').innerHTML = '';
-  btn.textContent = '深度搜索中…';
+  btn.disabled = false;           // 保持可点：再点一下就是停止
+  btn.textContent = '✕ 停止搜索';
   hint.textContent = '正在搜索局域网设备 + mDNS（约 6 秒先出结果）…';
   const onProgress = st => {
     renderScanList(st.found || []);
@@ -1589,16 +1615,20 @@ async function deepDiscover() {
     if (st && st.error && !found.length) {
       hint.textContent = st.error;
     } else if (!found.length) {
-      hint.textContent = '没发现目标：请确认手机已打开「无线调试」或与电脑在同一局域网，然后重试';
+      hint.textContent = st && st.canceled
+        ? '已停止搜索'
+        : '没发现目标：请确认手机已打开「无线调试」或与电脑在同一局域网，然后重试';
     } else {
       const hasPair = found.some(x => x.pairing);
-      hint.textContent = '发现 ' + found.length + ' 个目标（' + parts +
+      hint.textContent = (st.canceled ? '已停止搜索：' : '') +
+        '发现 ' + found.length + ' 个目标（' + parts +
         '，耗时 ' + st.elapsed + 's）' +
         (hasPair ? '；「待配对」的点一下会把地址填进「其它方式」里的首次配对' : '，点一下即可直接连接');
     }
   } catch (e) {
     hint.textContent = '深度搜索失败: ' + e;
   }
+  deepBusy = false;
   btn.disabled = false;
   btn.textContent = '🧭 深度搜索';
 }
@@ -1976,6 +2006,14 @@ async function saveTray(on) {
   await api('/api/config', 'POST', { minimize_to_tray: !!on });
   setHint(on ? '已开启：点关闭会缩小到托盘，右键托盘图标可重新打开或退出'
              : '已关闭：点关闭将直接退出应用', 9000);
+}
+
+// 投屏窗口置顶（默认关闭）：改完重新投屏一次生效
+async function saveAlwaysOnTop(on) {
+  config.always_on_top = !!on;
+  await api('/api/config', 'POST', { always_on_top: !!on });
+  setHint(on ? '已开启投屏窗口置顶（重新投屏后生效）'
+             : '已关闭投屏窗口置顶（重新投屏后生效）', 9000);
 }
 
 // 掉线自动重连开关（默认开启）

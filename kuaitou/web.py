@@ -19,7 +19,16 @@ import urllib.request
 
 import webview
 
-from .apps import _app_name, auto_sync_icons, forget_icon_sync, icon_rev, list_apps, request_icon, resync_icons
+from .apps import (
+    _app_name,
+    auto_sync_icons,
+    find_cached_icon,
+    forget_icon_sync,
+    icon_rev,
+    list_apps,
+    request_icon,
+    resync_icons,
+)
 from .device import (
     CLASSIC_ADB_PORT,
     _device_model,
@@ -38,7 +47,7 @@ from .device import (
     unlock_now,
     usb_to_wifi,
 )
-from .discover import deep_discover, deep_state, discover_devices
+from .discover import deep_cancel, deep_discover, deep_state, discover_devices
 from .storage import APP_VERSION, RES_DIR, load_config, save_config
 from .system import (
     _apply_autostart,
@@ -177,7 +186,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pkg = qs.get('pkg', [''])[0]
             serial = qs.get('device', [''])[0] or None
             if pkg:
-                proc, focused = launch_app(pkg, serial=serial)
+                # 标题栏和图标都按目标应用来：scrcpy 默认的「scrcpy」看不出投的是哪一个
+                proc, focused = launch_app(pkg, serial=serial,
+                                           title=_app_name(pkg) or pkg,
+                                           icon_path=find_cached_icon(pkg))
                 if focused:
                     # 该应用已经在投屏：没有重复拉起 scrcpy，只把已有窗口唤到前台
                     self.send_json({"ok": True, "focused": True})
@@ -253,6 +265,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == '/api/usb2wifi':
             self.send_json(usb_to_wifi())
+
+        elif path == '/api/discover/deep/stop':
+            # 深度搜索最长要跑两分多钟，用户中途不想等了得能停下来
+            self.send_json(deep_cancel())
 
         elif path == '/api/qr/start':
             name = "kuaitou-" + secrets.token_hex(4)

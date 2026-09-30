@@ -10,10 +10,11 @@
 import json
 import os
 import sys
+import threading
 
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.5.1"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
@@ -202,6 +203,9 @@ DEFAULT_CONFIG = {
     "max_size": "0",            # 画面最大边长（像素），0 = 不限（原始分辨率）
     "reconnect_enabled": True,  # 无线掉线后后台自动重连（退避 + 次数上限）
     "autostart": False,         # 开机自启：静默启动，只驻托盘
+    "always_on_top": False,     # 投屏窗口置顶（镜像应用时一边看手机一边干别的）
+    "window_x": "",             # 上次关掉投屏窗口时的位置，下次沿用它开窗；空 = 让 scrcpy 自己挑
+    "window_y": "",
     "recent_devices": [],       # 最近连接过的设备 [{addr, ip, port, name, ts}]，最多 5 台
     "quick_launch": {},         # {设备序列号: [包名...]}；"*" 为无专属列表时的默认值
     "minimize_to_tray": False,  # 开启后点关闭不退出，而是收进系统托盘继续待命
@@ -232,12 +236,20 @@ def load_config():
         merged["quick_launch"] = {}
     return merged
 
+_config_lock = threading.Lock()
+
 def save_config(cfg):
+    """合并写入配置：先读当前配置再改，所以整个过程要串行。
+
+    HTTP 请求是多线程处理的，投屏窗口关掉时后台线程也会写一次（记窗口位置）——
+    两边同时「读-改-写」会把对方的改动冲掉（比如刚存的画面设置被覆盖回旧值）。
+    """
     try:
-        current = load_config()
-        current.update(cfg)
-        storage_write(CONFIG_STREAM,
-                      json.dumps(current, ensure_ascii=False, indent=2))
+        with _config_lock:
+            current = load_config()
+            current.update(cfg)
+            storage_write(CONFIG_STREAM,
+                          json.dumps(current, ensure_ascii=False, indent=2))
     except Exception:
         pass
 

@@ -19,6 +19,7 @@ import threading
 import time
 from ctypes import wintypes
 
+from . import winbar
 from .storage import (
     ADB_PATH,
     LAUNCH_LOG_STREAM,
@@ -338,7 +339,7 @@ def _pc_dpi():
     except Exception:
         return 96
 
-def build_scrcpy_cmd(pkg=None, serial=None):
+def build_scrcpy_cmd(pkg=None, serial=None, title=None):
     cfg = load_config()
     w = cfg.get("res_w", "1080")
     h = cfg.get("res_h", "2400")
@@ -350,18 +351,102 @@ def build_scrcpy_cmd(pkg=None, serial=None):
     cmd = [SCRCPY_PATH] + _serial_args(serial) + [
         "--flex-display",
         "--stay-awake",
-        "--window-x=600",
-        "--window-y=50",
     ]
-    cmd += _stream_args(cfg) + _video_args(cfg)
+    cmd += _window_args(cfg) + _stream_args(cfg) + _video_args(cfg)
+    if cfg.get("always_on_top"):
+        cmd.append("--always-on-top")
     if audio_mode == "phone":
         cmd.append("--no-audio")
 
     if pkg:
+        if title:
+            # 标题栏写目标应用的名字：默认那个 "scrcpy" 看不出投的是哪个应用
+            cmd.append("--window-title=" + title)
         cmd.append(f"--new-display={w}x{h}/{dpi}")
         cmd.append("--no-vd-system-decorations")   # 虚拟屏里不画状态栏/导航栏
         cmd.append(f"--start-app={pkg}")
     return cmd
+
+def _window_args(cfg):
+    """投屏窗口的初始位置：沿用上次关窗口时记下的坐标，没有就交给 scrcpy 自己挑（auto）。
+
+    以前这里写死 --window-x=600 --window-y=50：用户把窗口挪走，下次投屏又跳回原处；
+    小屏或改了显示器布局的电脑上，那个坐标还可能正好落在屏幕外面。
+    配置里存的是逻辑坐标（Windows 报给我们的那套），scrcpy 要的是物理像素，这里换算。
+    """
+    pos = _saved_window_pos(cfg)
+    if not pos:
+        return []
+    scale = _screen_scale()
+    return ["--window-x=%d" % int(round(pos[0] * scale)),
+            "--window-y=%d" % int(round(pos[1] * scale))]
+
+def _screen_scale():
+    """物理像素 ÷ 逻辑像素（Windows 显示缩放比例）。
+
+    本进程不是 DPI 感知的，Windows 会把屏幕尺寸和窗口坐标都按缩放比例虚拟化后再给我们，
+    而 scrcpy 摆窗口用的是物理像素。所以存位置用逻辑坐标、用位置时换算成物理像素；
+    反过来的话（存物理），200% 缩放下每次记录都要经过一次取整，位置会一趟趟往右下漂。
+    不改进程的 DPI 感知：那会把整套界面尺寸和 pywebview 窗口一起卷进来，不值得。
+    """
+    try:
+        gdi32 = ctypes.windll.gdi32
+        hdc = gdi32.CreateDCW("DISPLAY", None, None, None)
+        try:
+            phys = gdi32.GetDeviceCaps(hdc, 118)        # DESKTOPHORZRES：物理宽度
+        finally:
+            gdi32.DeleteDC(hdc)
+        logical = ctypes.windll.user32.GetSystemMetrics(0)
+        if phys > 0 and logical > 0:
+            return phys / float(logical)
+    except Exception:
+        pass
+    return 1.0
+
+def _window_client_pos(hwnd):
+    """窗口客户区左上角的位置（本进程的逻辑坐标）。
+
+    取客户区而不是整窗矩形：SDL 设的就是客户区位置，存客户区才能原样还原，不会每次
+    都往左上偏一个边框的宽度。也用不着换算缩放：Windows 报给我们的就是逻辑坐标，
+    存它，下次乘回缩放比例，一来一回刚好对上。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        pt = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+            return None
+        return int(pt.x), int(pt.y)
+    except Exception:
+        return None
+
+def _saved_window_pos(cfg):
+    try:
+        x = int(str(cfg.get("window_x", "")).strip())
+        y = int(str(cfg.get("window_y", "")).strip())
+    except (TypeError, ValueError):
+        return None
+    return (x, y) if _pos_reachable(x, y) else None
+
+def _pos_reachable(x, y):
+    """这个坐标是否还落在可见的虚拟桌面上（多显示器合起来算一块，负坐标也算数）。
+
+    存的是上次投屏时的位置：换过显示器 / 改过分辨率之后，旧坐标可能已经在屏幕之外，
+    再沿用就等于「投屏窗口打开了却看不见」。留一点余量，方便用户拖回来。
+
+    现在窗口带原生标题栏，标题栏算在窗口矩形内部，上沿不需要再额外让出高度；只要求
+    标题栏那一条（也就是窗口左上角）还落在桌面范围内，用户就能拖回来。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        # SM_XVIRTUALSCREEN / YVIRTUALSCREEN / CXVIRTUALSCREEN / CYVIRTUALSCREEN
+        vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+        vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+        if vw <= 0 or vh <= 0:
+            return False
+        return ((vx - 40 <= x <= vx + vw - 60)
+                and (vy - 10 <= y <= vy + vh - 30))
+    except Exception:
+        return False
 
 def _stream_args(cfg):
     """码率 / 帧率：镜像应用和镜像桌面共用，避免两边设置不一致。
@@ -956,7 +1041,7 @@ def screen_off(serial=None):
 _mirror_procs = {}          # {(序列号, 包名): Popen}
 _mirror_lock = threading.Lock()
 
-def launch_app(pkg, serial=None):
+def launch_app(pkg, serial=None, title=None, icon_path=None):
     key = (serial or "", pkg)
     with _mirror_lock:
         old = _mirror_procs.get(key)
@@ -971,15 +1056,20 @@ def launch_app(pkg, serial=None):
         # 抓的就是手机输出那路声音：手机音量压着，电脑这边就没声 / 很小，所以先拉满
         boost_media_volume(serial)
 
-    cmd = build_scrcpy_cmd(pkg=pkg, serial=serial)
+    cmd = build_scrcpy_cmd(pkg=pkg, serial=serial, title=title)
     proc = _spawn(cmd, tag="镜像应用 %s @ %s" % (pkg, serial or "-"))
     recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
+    target = _saved_window_pos(cfg)     # 这次要摆的位置（没有就交给 scrcpy 自己挑）
     with _mirror_lock:
         _mirror_procs[key] = proc
 
     def wait_and_kill():
         nudge_scrcpy_window(proc)
-        proc.wait()
+        # 原生标题栏上的图标与「置顶」按钮由 winbar 叠加
+        winbar.attach(proc, icon_path=icon_path,
+                      always_on_top=cfg.get("always_on_top"))
+        _track_window_pos(proc, target)     # 摆正 + 盯着位置，退出时记下来，下次还开在这儿
+        proc.wait()                     # 上面超时回来时兜底，保证等到进程真的结束
         with _mirror_lock:
             if _mirror_procs.get(key) is proc:
                 _mirror_procs.pop(key, None)
@@ -1001,8 +1091,10 @@ def launch_desktop(serial=None):
     audio_mode = cfg.get("audio_mode", "both")
 
     cmd = ([SCRCPY_PATH] + _serial_args(serial)
-           + ["--stay-awake", "--window-x=600", "--window-y=50"]
-           + _stream_args(cfg) + _video_args(cfg))
+           + ["--stay-awake", "--window-title=镜像桌面"]
+           + _window_args(cfg) + _stream_args(cfg) + _video_args(cfg))
+    if cfg.get("always_on_top"):
+        cmd.append("--always-on-top")
     if audio_mode == "phone":
         cmd.append("--no-audio")
     elif audio_mode == "pc":
@@ -1010,8 +1102,11 @@ def launch_desktop(serial=None):
 
     proc = _spawn(cmd, tag="镜像桌面 @ %s" % (serial or "-"))
     recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
+    target = _saved_window_pos(cfg)     # 这次要摆的位置（没有就交给 scrcpy 自己挑）
     def wait_restore():
-        proc.wait()
+        winbar.attach(proc, always_on_top=cfg.get("always_on_top"))
+        _track_window_pos(proc, target)     # 摆正 + 盯着位置，退出时记下来，下次还开在这儿
+        proc.wait()                     # 上面超时回来时兜底，保证等到进程真的结束
         _close_child_log(proc.pid)
         restore_media_volume(serial)
     threading.Thread(target=wait_restore, daemon=True).start()
@@ -1036,6 +1131,63 @@ def _find_window_by_pid(pid):
     except Exception:
         return None
 
+def _wait_window(proc, timeout=15):
+    """等 scrcpy 的主窗口出现；进程先退出（启动失败）或超时都返回 None。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return None
+        hwnd = _find_window_by_pid(proc.pid)
+        if hwnd:
+            return hwnd
+        time.sleep(0.3)
+    return None
+
+_SWP_NOSIZE, _SWP_NOZORDER, _SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
+
+def _move_window_client_to(hwnd, target):
+    """把窗口摆到指定位置，让客户区左上角正好落在 target（逻辑坐标）上。
+
+    scrcpy 已经按记下的位置开过窗了，这一步只是把那一两像素的偏差抹平：scrcpy 交给 SDL
+    的坐标要经过一次边框换算，屏幕缩放不是 100% 时会差个一两像素；每次都按窗口实际位置
+    回记的话，窗口会一趟趟往同一侧爬。SetWindowPos 定的是整窗位置，所以先量出客户区相对
+    整窗的偏移再减掉。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        rect, pt = wintypes.RECT(), wintypes.POINT(0, 0)
+        if not (user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                and user32.ClientToScreen(hwnd, ctypes.byref(pt))):
+            return
+        dx, dy = int(pt.x) - rect.left, int(pt.y) - rect.top
+        user32.SetWindowPos(hwnd, 0, target[0] - dx, target[1] - dy, 0, 0,
+                            _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE)
+    except Exception:
+        pass
+
+def _track_window_pos(proc, target=None, timeout=25):
+    """投屏期间记下窗口位置，进程退出时把最后的坐标写进配置，下次沿用它开窗。
+
+    等窗口出现了才开始记；最小化 / 最大化时的矩形不代表用户挑的位置，跳过不记。
+    target 是这次要摆的位置，窗口一出来就校正过去（用户还没动过，不会跟他抢）。
+    """
+    hwnd = _wait_window(proc, timeout=timeout)
+    if not hwnd:
+        return
+    if target:
+        _move_window_client_to(hwnd, target)
+    user32 = ctypes.windll.user32
+    last = None
+    while proc.poll() is None:
+        try:
+            if not user32.IsIconic(hwnd) and not user32.IsZoomed(hwnd):
+                last = _window_client_pos(hwnd) or last
+        except Exception:
+            pass
+        time.sleep(1.0)
+    if last:
+        save_config({"window_x": str(last[0]), "window_y": str(last[1])})
+
 def focus_proc_window(proc):
     """把投屏窗口从最小化 / 别的窗口后面唤到前台。返回是否找到并唤起。"""
     hwnd = _find_window_by_pid(proc.pid)
@@ -1058,18 +1210,9 @@ def nudge_scrcpy_window(proc, timeout=15):
     """
     try:
         user32 = ctypes.windll.user32
-
-        deadline = time.time() + timeout
-        hwnd = None
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                return False  # scrcpy 已退出，视为启动失败
-            hwnd = _find_window_by_pid(proc.pid)
-            if hwnd:
-                break
-            time.sleep(0.3)
+        hwnd = _wait_window(proc, timeout=timeout)
         if not hwnd:
-            return False
+            return False        # scrcpy 已退出（启动失败）或超时没等到窗口
 
         rect = wintypes.RECT()
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
@@ -1164,6 +1307,7 @@ def shutdown_all():
     release_lock_timeout(None)
     # 拉满的手机音量同理：关窗会直接 os._exit，等投屏线程收尾来不及，这里先还
     restore_all_media_volume()
+    winbar.shutdown()
     cleanup_scrcpy()
     _kill_children()
     if _adb_server_ours:

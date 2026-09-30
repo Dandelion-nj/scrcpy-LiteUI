@@ -257,11 +257,16 @@ def _deep_threads():
     return max(4, min(8, cpu // 2))
 
 _deep_lock = threading.Lock()
+_deep_cancel = threading.Event()        # 用户点了「停止搜索」：扫描线程看到就收工
 _deep_state = {
     "running": False, "phase": "idle", "text": "", "progress": 0.0,
     "found": [], "elapsed": 0.0, "error": "", "hosts": 0, "scanned": 0,
-    "mdns_count": 0, "lan_count": 0, "port_count": 0,
+    "mdns_count": 0, "lan_count": 0, "port_count": 0, "canceled": False,
 }
+
+def _deep_stop(deadline):
+    """扫描线程该不该收手：用户点了停止，或时间预算已经用完。"""
+    return _deep_cancel.is_set() or time.time() > deadline
 
 def _deep_publish(**kw):
     with _deep_lock:
@@ -330,7 +335,7 @@ def _scan_shard(ip, ports, deadline, out, lock):
     try:
         while True:
             now = time.time()
-            if now > deadline:
+            if _deep_stop(deadline):
                 break
             while exp and exp[0][0] <= now:      # 超时的按顺序剔掉
                 _, s = exp.popleft()
@@ -404,7 +409,7 @@ def _scan_ports(ip, ports, deadline):
     n = _deep_threads()
     found = set()
     for attempt in range(_SCAN_PASSES):
-        if attempt and time.time() > deadline:
+        if attempt and _deep_stop(deadline):
             break
         out, lock = [], threading.Lock()
         threads = [threading.Thread(target=_scan_shard,
@@ -492,7 +497,7 @@ def _deep_job():
         verify_left = _VERIFY_BUDGET
         _deep_publish(phase="ports", hosts=len(hosts), scanned=0)
         for idx, ip in enumerate(hosts):
-            if time.time() > deadline:
+            if _deep_stop(deadline):
                 break
             _deep_publish(
                 progress=0.15 + 0.85 * idx / max(len(hosts), 1),
@@ -506,7 +511,7 @@ def _deep_job():
             if 0 < len(hits) <= _PORT_NOISE_MAX and verify_left > 0:
                 _deep_publish(text="复核候选 %s（%d 个端口）…" % (ip, len(hits)))
                 for p in hits[:_VERIFY_MAX_PER_HOST]:
-                    if verify_left <= 0 or time.time() > deadline:
+                    if verify_left <= 0 or _deep_stop(deadline):
                         break
                     t_v = time.time()
                     addr = "%s:%d" % (ip, p)
@@ -532,20 +537,37 @@ def _deep_job():
         _deep_publish(error="深度搜索出错：%s" % e)
     finally:
         with _deep_lock:
+            canceled = _deep_cancel.is_set()
             _deep_state["running"] = False
             _deep_state["phase"] = "done"
+            _deep_state["canceled"] = canceled
             _deep_state["progress"] = 1.0
             _deep_state["elapsed"] = round(time.time() - t0, 1)
-            _deep_state["text"] = "深度搜索完成：共 %d 个目标（耗时 %ss）" % (
+            _deep_state["text"] = "%s：共 %d 个目标（耗时 %ss）" % (
+                "已停止深度搜索" if canceled else "深度搜索完成",
                 len(_deep_state["found"]), _deep_state["elapsed"])
 
 def deep_discover():
     """启动一次深度搜索；已在跑就直接返回当前进度。结果由前端轮询 deep_state() 取。"""
     with _deep_lock:
         if not _deep_state["running"]:
+            _deep_cancel.clear()            # 上一轮可能被用户停过，新的一轮从头算
             _deep_state.update({"running": True, "phase": "lan", "progress": 0.0,
                                 "text": "开始深度搜索 …", "found": [], "error": "",
                                 "elapsed": 0.0, "hosts": 0, "scanned": 0,
-                                "mdns_count": 0, "lan_count": 0, "port_count": 0})
+                                "mdns_count": 0, "lan_count": 0, "port_count": 0,
+                                "canceled": False})
             threading.Thread(target=_deep_job, name="deep-scan", daemon=True).start()
+    return deep_state()
+
+def deep_cancel():
+    """请求停止正在跑的深度搜索（没在跑就什么也不做）。
+
+    前端仍按老办法收尾：等 deep_state() 里 running 变 false，拿到已经找到的那批结果。
+    """
+    with _deep_lock:
+        running = _deep_state["running"]
+    if running:
+        _deep_cancel.set()
+        _deep_publish(text="正在停止深度搜索 …")
     return deep_state()
