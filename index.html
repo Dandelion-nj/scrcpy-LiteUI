@@ -188,23 +188,38 @@ body {
   color: var(--green); border-color: rgba(35, 134, 54, 0.6); opacity: 1; cursor: default;
 }
 
-/* 设置页「锁屏解锁」：一台设备一块，各自输入 + 保存 / 清除 */
-.unlock-edit {
+/* 设置页「锁屏解锁」：一台设备一块，左上是设备与状态，右下是密码输入 + 保存/清除 */
+.pin-list { display: flex; flex-direction: column; gap: 10px; }
+.pin-card {
   background: var(--bg); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+  border-radius: 10px; padding: 12px 14px; transition: border-color 0.15s;
 }
-.unlock-edit-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 10px; margin-bottom: 8px; font-size: 12px;
+.pin-card:focus-within { border-color: var(--accent); }
+.pin-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.pin-name { font-size: 13px; font-weight: 600; }
+.pin-addr {
+  font-family: Consolas, ui-monospace, monospace; font-size: 11px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.unlock-edit-name {
-  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.pin-badge {
+  margin-left: auto; flex-shrink: 0; font-size: 11px; padding: 2px 9px;
+  border: 1px solid var(--border); border-radius: 999px; color: var(--text-dim);
 }
-.unlock-edit-state { color: var(--text-dim); flex: 0 0 auto; }
-.unlock-edit-state.on { color: var(--green); }
-.unlock-edit-row { display: flex; gap: 8px; align-items: center; }
-.unlock-edit-row input { flex: 1; }
-.unlock-edit-row .btn { flex: 0 0 auto; }
+.pin-badge.on {
+  color: var(--green); border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.08);
+}
+.pin-row { display: flex; gap: 8px; }
+.pin-row input {
+  flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none;
+}
+.pin-row input:focus { border-color: var(--accent); }
+.pin-row .btn { flex-shrink: 0; }
+
+/* 设置页「图标」：两个入口 + 结果提示 */
+.icon-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.icon-tools .btn:disabled { opacity: 0.5; cursor: default; }
 
 #hintText { color: var(--accent); }
 
@@ -676,8 +691,28 @@ mark {
 
       <div class="section">
         <div class="section-title">锁屏解锁</div>
-        <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码并「保存」，之后点顶栏该设备旁边的「解锁」按钮，就会在后台点亮屏幕、静默上滑并输入密码；点「清除」则不再为这台手机提供解锁。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
-        <div id="unlockList"></div>
+        <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码再点「保存」（点「清除」则不再为这台手机提供解锁），之后点顶栏该设备旁边的「🔓 解锁」，程序会在后台点亮屏幕、静默上滑并输入密码。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
+        <div class="pin-list" id="unlockList"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">图标</div>
+        <div class="section-desc">应用图标默认取自随包内置的素材库，抓不到的就留一个首字母占位。手机上的取图工具能导出这台手机真实在用的图标：在手机上导出后点「从手机导入图标」，导入的图标会优先于内置素材库显示。图标文件名建议直接用包名（如 com.tencent.mm.png），用应用名也能认。</div>
+        <div class="row-2" style="margin-bottom:12px">
+          <div class="form-group" style="margin-bottom:0">
+            <label>取图工具包名（可留空）</label>
+            <input id="icon_tool_package" placeholder="如 com.xxx.iconpicker" onchange="saveConfig()">
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>图标导出目录（手机上的路径）</label>
+            <input id="icon_import_dir" placeholder="/sdcard/Download/icons" onchange="saveConfig()">
+          </div>
+        </div>
+        <div class="icon-tools">
+          <button class="btn" id="iconToolBtn" onclick="openIconTool()">📱 打开手机上的取图工具</button>
+          <button class="btn btn-primary" id="iconImportBtn" onclick="importIcons()">📥 从手机导入图标</button>
+        </div>
+        <div class="scan-hint" id="iconHint">导入的图标写进「快投.exe」的数据流，换电脑不会跟着走；同一台电脑上所有设备共用一份。</div>
       </div>
     </div>
 
@@ -1212,6 +1247,8 @@ function fillConfigInputs() {
   setVal('scale', config.scale);
   setVal('fps', config.fps);
   setVal('max_size', config.max_size);
+  setVal('icon_tool_package', config.icon_tool_package);
+  setVal('icon_import_dir', config.icon_import_dir);
   const am = document.getElementById('audio_mode');
   if (am && document.activeElement !== am && config.audio_mode) am.value = config.audio_mode;
   const vc = document.getElementById('video_codec');
@@ -1682,7 +1719,8 @@ function iconImgError(img) {
 function makeAppItem(app, nameHtml, isQuick = false) {
   const div = document.createElement('div');
   div.className = 'app-item';
-  const iconUrl = '/api/icon?pkg=' + encodeURIComponent(app.package);
+  const iconUrl = '/api/icon?pkg=' + encodeURIComponent(app.package)
+                  + (iconStamp ? '&t=' + iconStamp : '');
   div.innerHTML = `
     <button class="app-add" data-pkg="${escapeHtml(app.package)}"></button>
     <div class="app-icon">
@@ -2001,7 +2039,7 @@ function updateLockBar(devs) {
   }
   sbtn.disabled = false;
   sbtn.textContent = '📴 关闭物理屏幕';
-  sbtn.title = '按电源键熄屏，但不会锁定手机';
+  sbtn.title = '只关掉手机的显示，手机不会因此被锁上';
 }
 
 // 解锁：后端会先点亮屏幕再上滑输密码（熄屏时上滑没有落点）
@@ -2016,10 +2054,9 @@ async function unlockNow() {
   let r = null;
   try { r = await api('/api/unlock/run', 'POST', {serial: d.serial}); } catch (e) {}
   lockBusy = false;
-  updateLockBar(devices);
+  await checkStatus();          // 先拿回最新的锁屏状态，再让按钮按新状态重画
   if (!r) { setHint('解锁请求失败，请重试', 9000); return; }
   setHint(r.msg || (r.ok ? '已解锁手机屏幕' : '解锁失败'), r.ok ? 6000 : 12000);
-  await checkStatus();
 }
 
 async function screenOff() {
@@ -2034,17 +2071,20 @@ async function screenOff() {
   btn.disabled = false;
   btn.textContent = old;
   if (!r) { setHint('熄屏请求失败，请重试', 9000); return; }
-  setHint(r.msg || (r.ok ? '已关闭手机物理屏幕' : '关闭屏幕失败'), r.ok ? 6000 : 12000);
+  setHint(r.msg || (r.ok ? '已关闭手机物理屏幕' : '关闭屏幕失败'), r.ok ? 8000 : 12000);
 }
 
 // 设置页：一台设备一块，输入框 + 「保存」/「清除」两个显式按钮
-// （上一版靠输入框失焦自动保存，而值本来就是空的时候不会触发事件，密码就删不掉）
+// （更早那版靠输入框失焦自动保存，而值本来就是空的时候不会触发事件，密码就删不掉）
 function renderUnlockSettings(devs) {
   const box = document.getElementById('unlockList');
   if (!box) return;
   const key = devs.map(d => d.serial + ':' + (d.pin_set ? '1' : '0')).join(',');
   if (key === unlockKeyApplied) return;
-  if (box.contains(document.activeElement)) return;   // 正在输入就别重建，免得打断
+  // 只在「输入框」还带着焦点时跳过重建——之前是按整个容器判断，点完保存焦点在按钮上，
+  // 结果列表不重建、状态文字一直停在旧值。
+  const focused = document.activeElement;
+  if (focused && focused.tagName === 'INPUT' && box.contains(focused)) return;
   unlockKeyApplied = key;
   box.innerHTML = '';
   if (!devs.length) {
@@ -2053,27 +2093,35 @@ function renderUnlockSettings(devs) {
   }
   devs.forEach(d => {
     const card = document.createElement('div');
-    card.className = 'unlock-edit';
+    card.className = 'pin-card';
 
     const head = document.createElement('div');
-    head.className = 'unlock-edit-head';
+    head.className = 'pin-head';
     const name = document.createElement('span');
-    name.className = 'unlock-edit-name';
-    name.textContent = deviceLabel(d) + '　' + (d.usb ? 'USB · ' : '') + (d.ip || d.serial);
-    const state = document.createElement('span');
-    state.className = 'unlock-edit-state' + (d.pin_set ? ' on' : '');
-    state.textContent = d.pin_set ? '已设置密码（USB / 无线共用）' : '未设置';
+    name.className = 'pin-name';
+    name.textContent = deviceLabel(d);
+    const addr = document.createElement('span');
+    addr.className = 'pin-addr';
+    addr.textContent = (d.usb ? 'USB · ' : '') + (d.ip || d.serial);
+    const badge = document.createElement('span');
+    badge.className = 'pin-badge' + (d.pin_set ? ' on' : '');
+    badge.textContent = d.pin_set ? '已设置密码' : '未设置';
     head.appendChild(name);
-    head.appendChild(state);
+    head.appendChild(addr);
+    head.appendChild(badge);
 
     const row = document.createElement('div');
-    row.className = 'unlock-edit-row';
+    row.className = 'pin-row';
     const input = document.createElement('input');
     input.type = 'password';
     input.autocomplete = 'new-password';
+    input.maxLength = 32;
     input.placeholder = d.pin_set ? '输入新密码可修改' : '数字 PIN / 字母数字密码';
+    input.onkeydown = ev => {
+      if (ev.key === 'Enter') { ev.preventDefault(); saveUnlockPin(d.serial, input); }
+    };
     const save = document.createElement('button');
-    save.className = 'btn';
+    save.className = 'btn btn-primary';
     save.textContent = '保存';
     save.onclick = () => saveUnlockPin(d.serial, input);
     const clear = document.createElement('button');
@@ -2081,7 +2129,7 @@ function renderUnlockSettings(devs) {
     clear.textContent = '清除';
     clear.disabled = !d.pin_set;
     clear.title = d.pin_set ? '删掉这台手机的密码，之后不再提供解锁' : '还没设置密码';
-    clear.onclick = () => saveUnlockPin(d.serial, null);
+    clear.onclick = () => saveUnlockPin(d.serial, null, clear);
     row.appendChild(input);
     row.appendChild(save);
     row.appendChild(clear);
@@ -2093,24 +2141,78 @@ function renderUnlockSettings(devs) {
 }
 
 // el 为 null 表示点的是「清除」；「保存」只认输入框里的新密码，空输入不会误删已存的
-async function saveUnlockPin(serial, el) {
+async function saveUnlockPin(serial, el, btn) {
   if (el && !el.value) {
     setHint('请先输入这台手机的锁屏密码；要取消解锁请点「清除」', 9000);
     return;
   }
   const val = el ? el.value : '';
   if (el) el.value = '';         // 存完就清空输入框，界面上不留明文
+  if (btn) btn.disabled = true;
   let r = null;
   try { r = await api('/api/unlock/pin', 'POST', {serial, pin: val}); } catch (e) {}
+  if (btn) btn.disabled = false;
   if (!r || r.ok === false) {
     setHint(el ? '保存锁屏密码失败，请重试' : '清除失败，请重试', 9000);
     return;
   }
-  unlockKeyApplied = '';         // 状态变了，下次轮询重建列表
+  // 先把状态改成后端刚确认的值再重画：否则这一帧还是旧状态，看起来像「点了没反应」
+  const d = devices.find(x => x.serial === serial);
+  if (d) d.pin_set = !!r.pin_set;
+  unlockKeyApplied = '';
+  renderUnlockSettings(devices);
+  updateLockBar(devices);
   setHint(r.pin_set
     ? '已保存该设备的锁屏密码：到顶栏点「解锁」即可后台解锁'
     : '已清除该设备的锁屏密码：不再提供解锁', 9000);
-  await checkStatus();
+}
+
+/* ---------- 图标：在手机上打开取图工具 / 把导出的图标收回来 ---------- */
+// 导入的图标写进可写图标库，查找顺序上优先于随包内置的素材库；导入完给图标地址加个
+// 时间戳后缀，逼浏览器重新取图，不用重启应用。
+let iconStamp = 0;
+
+async function openIconTool() {
+  const d = devices.find(x => x.serial === activeDevice);
+  const btn = document.getElementById('iconToolBtn');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '正在打开…';
+  let r = null;
+  try {
+    r = await api('/api/icon/tool', 'POST',
+                  {serial: d ? d.serial : '', package: document.getElementById('icon_tool_package').value.trim()});
+  } catch (e) {}
+  btn.disabled = false;
+  btn.textContent = old;
+  if (!r) { setHint('打开取图工具失败，请重试', 9000); return; }
+  setHint(r.msg || (r.ok ? '已打开取图工具' : '打开失败'), r.ok ? 9000 : 12000);
+}
+
+async function importIcons() {
+  const d = devices.find(x => x.serial === activeDevice);
+  const btn = document.getElementById('iconImportBtn');
+  const hint = document.getElementById('iconHint');
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '正在导入…';
+  hint.textContent = '正在从手机拉取图标，几百张图也就几秒，请稍等…';
+  let r = null;
+  try { r = await api('/api/icon/import', 'POST', {serial: d ? d.serial : ''}); } catch (e) {}
+  btn.disabled = false;
+  btn.textContent = old;
+  if (!r) {
+    hint.textContent = '导入请求失败，请重试';
+    setHint('导入图标失败，请重试', 9000);
+    return;
+  }
+  hint.textContent = r.msg || (r.ok ? '导入完成' : '没有导入任何图标');
+  setHint(r.msg || (r.ok ? '图标已导入' : '没有导入任何图标'), r.ok ? 9000 : 12000);
+  if (r.ok) {
+    iconStamp = Date.now();      // 图标变了：让浏览器重新取图
+    renderApps(allApps);
+    renderQuick();
+  }
 }
 
 // 开机自启动：开启时同时打开「缩小到托盘」，开机后静默驻留托盘
@@ -2139,7 +2241,9 @@ async function saveConfig() {
     fps: document.getElementById('fps').value,
     video_codec: document.getElementById('video_codec').value,
     max_size: document.getElementById('max_size').value,
-    audio_mode: document.getElementById('audio_mode').value
+    audio_mode: document.getElementById('audio_mode').value,
+    icon_tool_package: document.getElementById('icon_tool_package').value.trim(),
+    icon_import_dir: document.getElementById('icon_import_dir').value.trim()
   };
   Object.assign(config, cfg);
   await api('/api/config', 'POST', cfg);

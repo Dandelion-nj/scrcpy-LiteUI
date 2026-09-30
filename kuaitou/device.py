@@ -414,10 +414,10 @@ _DEFAULT_SCREEN = (1080, 2400)  # 取不到 wm size 时的兜底分辨率，够 
 _LOCK_CACHE_TTL = 5.0           # 锁屏状态缓存秒数：界面 3 秒一轮询，dumpsys window 输出很大
 _UNLOCK_VERIFY_ROUNDS = 5       # 解锁后复查锁屏标志的轮数
 _UNLOCK_VERIFY_WAIT = 0.8       # 每轮复查的间隔：vivo 等 ROM 的标志翻转会晚一拍
+_SDK_ANDROID_15 = 35            # Android 15 = API 35：从这版起才有 cmd display power-off
 _LOCK_TIMEOUT_KEY = "lock_screen_lock_after_timeout"   # 熄屏后多久自动锁定（毫秒）
-_SCREEN_OFF_KEEP_MS = 86400000  # 熄屏瞬间临时顶成一天，让系统不要顺手锁屏
-_SCREEN_OFF_HOLD = 3.0          # 顶住几秒后再把用户原来的「自动锁定」放回去
-_SCREEN_OFF_SETTLE = 0.9        # 按完电源键等系统真正熄屏
+_SCREEN_OFF_KEEP_MS = 86400000  # 老系统的退路：熄屏前把上面那条临时顶成一天
+_SCREEN_OFF_SETTLE = 0.9        # 发完熄屏指令后等系统状态更新
 _SCREEN_OFF_ROUNDS = 3          # 复查熄屏是否生效的轮数（vivo 等 ROM 状态更新晚一拍）
 _SCREEN_OFF_WAIT = 0.6          # 每轮复查的间隔
 
@@ -527,10 +527,14 @@ def _screen_size(serial=None):
     return (int(m.group(1)), int(m.group(2))) if m else _DEFAULT_SCREEN
 
 def wake_screen(serial=None):
-    """点亮手机屏幕（KEYCODE_WAKEUP=224）。
+    """点亮手机屏幕，并把之前临时顶住的「熄屏后自动锁定」还回去。
 
     熄屏状态下锁屏标志还在，但上滑和输入都没有落点，必须先叫醒屏幕再动手。
     """
+    release_lock_timeout(serial)
+    # Android 15+ 关屏时是直接关的显示电源，得用对应的 power-on 叫回来；
+    # 老系统没这条命令（会报错，忽略即可），补一发 KEYCODE_WAKEUP 就够。
+    run_adb(["shell", "cmd", "display", "power-on", "0"], timeout=8, serial=serial)
     run_adb(["shell", "input", "keyevent", "224"], timeout=8, serial=serial)
 
 def _swipe_and_type_pin(pin, serial=None):
@@ -583,13 +587,47 @@ def _restore_lock_timeout(serial, original):
         run_adb(["shell", "settings", "delete", "secure", _LOCK_TIMEOUT_KEY],
                 timeout=8, serial=serial)
 
-def _restore_lock_timeout_later(serial, original):
-    """熄屏几秒后再还原设置：系统是熄屏那一刻读这个值决定锁不锁的，晚点还原不影响。"""
+_sdk_cache_lock = threading.Lock()
+_sdk_cache = {}                 # 序列号 -> API 级别
+
+def _sdk_level(serial=None):
+    """设备 API 级别（35 = Android 15）。取不到返回 0，一律按老系统处理。"""
+    key = serial or ""
+    with _sdk_cache_lock:
+        if key in _sdk_cache:
+            return _sdk_cache[key]
+    out, _, _ = run_adb(["shell", "getprop", "ro.build.version.sdk"], timeout=8, serial=serial)
     try:
-        time.sleep(_SCREEN_OFF_HOLD)
-        _restore_lock_timeout(serial, original)
+        level = int((out or "").strip().splitlines()[0])
     except Exception:
-        pass
+        level = 0
+    with _sdk_cache_lock:
+        _sdk_cache[key] = level
+    return level
+
+def _display_power(action, serial=None):
+    """Android 15+ 的 `cmd display power-off|power-on <id>`，成功返回 True。
+
+    这是「关掉显示但不锁定」的正路：显示电源被直接关掉，设备并没有进入睡眠，
+    锁屏那套定时器压根不会启动（scrcpy 关屏不锁屏走的也是这条）。
+    老系统没有这个命令，会报错，据此回退到电源键那条路。
+    """
+    out, err, code = run_adb(["shell", "cmd", "display", action, "0"], timeout=8, serial=serial)
+    text = (out + err).lower()
+    return code == 0 and not any(bad in text for bad in
+                                ("error", "exception", "unknown", "not found"))
+
+def _display_screen_state(serial=None):
+    """dumpsys display 里的屏幕状态：True=亮着、False=已熄、None=读不到就不判断。
+
+    用 cmd display 关屏时设备并没有睡（mWakefulness 仍是 Awake），所以不能用
+    dumpsys power 判断，得看 dumpsys display 的 mScreenState。
+    """
+    out, _, code = run_adb(["shell", "dumpsys", "display"], timeout=10, serial=serial)
+    if code != 0 or not out:
+        return None
+    m = re.search(r"mScreenState=(\w+)", out)
+    return (m.group(1).upper() == "ON") if m else None
 
 def _screen_awake(serial=None):
     """手机是否亮着屏（dumpsys power 的 mWakefulness）。取不到标志返回 None，不做判断。"""
@@ -599,36 +637,83 @@ def _screen_awake(serial=None):
     m = re.search(r"mWakefulness=(\w+)", out)
     return m.group(1) == "Awake" if m else None
 
+_screen_off_held = {}           # 序列号 -> 顶住之前用户自己的「熄屏后自动锁定」值
+_screen_off_held_lock = threading.Lock()
+
+def _hold_lock_timeout(serial):
+    """老系统的退路用：把「熄屏后自动锁定」临时顶成一天，成功返回原值，失败返回 None。
+
+    顶完不能马上还原——有些 ROM 会持续读这条设置，提前还原等于没顶（这正是上一版
+    「关了屏还是被锁」的原因）。所以记在 _screen_off_held 里，等下次点亮屏幕或
+    退出应用时再还回去。
+    """
+    with _screen_off_held_lock:
+        if serial in _screen_off_held:
+            return _screen_off_held[serial]
+    orig, _, code = run_adb(["shell", "settings", "get", "secure", _LOCK_TIMEOUT_KEY],
+                            timeout=8, serial=serial)
+    if code != 0:
+        return None
+    _, _, put_code = run_adb(["shell", "settings", "put", "secure", _LOCK_TIMEOUT_KEY,
+                              str(_SCREEN_OFF_KEEP_MS)], timeout=8, serial=serial)
+    if put_code != 0:
+        return None
+    saved = (orig or "").strip()
+    with _screen_off_held_lock:
+        _screen_off_held[serial] = saved
+    return saved
+
+def release_lock_timeout(serial=None):
+    """把顶住的「熄屏后自动锁定」还回原值：点亮屏幕时、退出应用时都要调。"""
+    with _screen_off_held_lock:
+        if serial is None:
+            targets = list(_screen_off_held.items())
+            _screen_off_held.clear()
+        elif serial in _screen_off_held:
+            targets = [(serial, _screen_off_held.pop(serial))]
+        else:
+            targets = []
+    for dev, orig in targets:
+        _restore_lock_timeout(dev, orig)
+
+def _screen_off_by_power_key(serial=None):
+    """老系统的退路：顶住「自动锁定」→ 按电源键 → 复查是否真的熄屏。
+
+    这条路成不成取决于 ROM 认不认那条设置（vivo 就未必认），所以失败要照实说。
+    """
+    held = _hold_lock_timeout(serial) is not None
+    run_adb(["shell", "input", "keyevent", "26"], timeout=8, serial=serial)   # 26 = 电源键
+    time.sleep(_SCREEN_OFF_SETTLE)
+    awake = None
+    for _ in range(_SCREEN_OFF_ROUNDS):
+        awake = _screen_awake(serial)
+        if awake is not True:
+            break
+        time.sleep(_SCREEN_OFF_WAIT)
+    if awake is True:
+        return {"ok": False,
+                "msg": "已按电源键，但手机仍报告屏幕亮着：请看一眼手机是否停在需要操作的界面"}
+    if held:
+        return {"ok": True,
+                "msg": "已关闭手机物理屏幕（这台手机走的是「顶住自动锁定」的办法，不会立刻锁屏）"}
+    return {"ok": True,
+            "msg": "已关闭手机物理屏幕；没能顶住系统的「自动锁定」，如果被锁上请点「解锁」"}
+
 def screen_off(serial=None):
     """关闭手机物理屏幕，但不要让手机顺手锁上，返回 {ok, msg} 供界面提示。
 
-    单纯发一个电源键会走系统的「熄屏后自动锁定」，把手机锁掉（还得再解锁）。所以按电源键
-    之前先把这条设置临时顶成一天，熄屏后再还原：系统只在熄屏那一刻读它，用户自己的设置
-    不会被改坏。熄屏结果用 dumpsys power 复查，不假装成功。
+    优选 Android 15+ 的 `cmd display power-off`：只关显示、设备不进睡眠，锁屏的定时器
+    不会启动，所以手机不会被锁上。老系统没有这条命令，退回「顶住『熄屏后自动锁定』+
+    电源键」，那条路不保证不锁，提示里会说清楚走的是哪条。
     """
     try:
-        orig, _, orig_rc = run_adb(["shell", "settings", "get", "secure", _LOCK_TIMEOUT_KEY],
-                                   timeout=8, serial=serial)
-        _, _, put_rc = run_adb(["shell", "settings", "put", "secure", _LOCK_TIMEOUT_KEY,
-                                str(_SCREEN_OFF_KEEP_MS)], timeout=8, serial=serial)
-        run_adb(["shell", "input", "keyevent", "26"], timeout=8, serial=serial)   # 26 = 电源键
-        if put_rc == 0:
-            # 读不到原值时按“删掉这条设置”还原：系统默认（立即锁定）本来就等同没设过
-            threading.Thread(target=_restore_lock_timeout_later,
-                             args=(serial, orig if orig_rc == 0 else ""), daemon=True).start()
-        time.sleep(_SCREEN_OFF_SETTLE)
-        awake = None
-        for _ in range(_SCREEN_OFF_ROUNDS):
-            awake = _screen_awake(serial)
-            if awake is not True:
-                break
-            time.sleep(_SCREEN_OFF_WAIT)
-        if awake is True:
-            return {"ok": False, "msg": "已按电源键但屏幕还亮着：请看一眼手机是否停在需要操作的界面"}
-        msg = "已关闭手机物理屏幕，手机不会被锁定"
-        if put_rc != 0:
-            msg += "（这次没能顶住系统的「自动锁定」，如果手机被锁上，用「解锁」按钮解开）"
-        return {"ok": True, "msg": msg}
+        if _sdk_level(serial) >= _SDK_ANDROID_15 and _display_power("power-off", serial):
+            time.sleep(_SCREEN_OFF_SETTLE)
+            if _display_screen_state(serial) is True:
+                return {"ok": False,
+                        "msg": "已发送熄屏指令，但手机仍报告屏幕亮着：请看一眼手机是否停在需要操作的界面"}
+            return {"ok": True, "msg": "已关闭手机物理屏幕（只关显示，不会锁定手机）"}
+        return _screen_off_by_power_key(serial)
     except Exception as e:
         return {"ok": False, "msg": "关闭屏幕出错：%s" % e}
 
@@ -849,6 +934,8 @@ def cleanup_scrcpy():
 def shutdown_all():
     """关闭应用时统一收尾：投屏进程、本进程拉起的子进程，以及本次由我们启动的 adb 服务。
     托盘图标由上层（system）负责收尾——托盘是界面层的东西，不该由本模块反向依赖。"""
+    # 老系统关屏时顶住过「熄屏后自动锁定」，退出前必须还给用户，别把人家的设置留在我们这
+    release_lock_timeout(None)
     cleanup_scrcpy()
     _kill_children()
     if _adb_server_ours:

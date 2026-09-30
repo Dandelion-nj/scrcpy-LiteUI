@@ -3,8 +3,6 @@
 adb 一律不打真的：把 run_adb 换成返回固定输出的假函数，只验证解析与选择逻辑。
 """
 
-import time
-
 import pytest
 
 from kuaitou import device
@@ -105,12 +103,15 @@ def test_serial_args_prefers_usb_when_multiple(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clear_unlock_caches():
-    """身份键与锁屏状态都是模块级缓存，测试间必须清掉，免得互相串味。"""
-    device._device_key_cache.clear()
-    device._lock_cache.clear()
+    """身份键 / 锁屏状态 / API 级别 / 顶住的自动锁定都是模块级状态，测试间必须清掉。"""
+    def clear():
+        device._device_key_cache.clear()
+        device._lock_cache.clear()
+        device._sdk_cache.clear()
+        device._screen_off_held.clear()
+    clear()
     yield
-    device._device_key_cache.clear()
-    device._lock_cache.clear()
+    clear()
 
 
 @pytest.fixture
@@ -142,11 +143,15 @@ def _fake_adb(out):
 class _FakeAdb:
     """按命令分派的假 adb：记录收到的命令，锁屏 / 亮屏状态与 secure 设置可以随时改。"""
 
-    def __init__(self, sn="SN-ONE", serial_map=None):
+    def __init__(self, sn="SN-ONE", serial_map=None, sdk=35):
         self.sn = sn
         self.serial_map = serial_map or {}
+        self.sdk = sdk              # 35 = Android 15：才有 cmd display power-off
+        self.display_cmd_ok = True  # 置 False 模拟老系统里这条命令报错
+        self.power_off_works = True  # 置 False 模拟「命令发了但屏幕没关」
         self.locked = False
         self.awake = True           # dumpsys power 里的亮屏状态
+        self.screen_state = "ON"    # dumpsys display 里的 mScreenState
         self.settings = {}          # settings get/put/delete 的内存版
         self.settings_fail = False  # 置 True 时写设置失败，验证界面会如实提示
         self.dumpsys_calls = 0
@@ -158,9 +163,24 @@ class _FakeAdb:
         if args[1:3] == ["getprop", "ro.serialno"]:
             sn = self.serial_map.get(serial, self.sn)
             return (sn + "\n") if sn else "", "", 0
+        if args[1:3] == ["getprop", "ro.build.version.sdk"]:
+            return ("%d\n" % self.sdk) if self.sdk else "", "", 0
+        if args[1:4] == ["cmd", "display", "power-off"]:
+            if not self.display_cmd_ok:
+                return "", "cmd: Can't find service: display", 1
+            if self.power_off_works:
+                self.screen_state = "OFF"
+            return "Display power off: 0\n", "", 0
+        if args[1:4] == ["cmd", "display", "power-on"]:
+            if not self.display_cmd_ok:
+                return "", "cmd: Can't find service: display", 1
+            self.screen_state = "ON"
+            return "Display power on: 0\n", "", 0
         if args[1:3] == ["dumpsys", "power"]:
             flag = "Awake" if self.awake else "Asleep"
             return "  mWakefulness=%s\n" % flag, "", 0
+        if args[1:3] == ["dumpsys", "display"]:
+            return "  mScreenState=%s\n" % self.screen_state, "", 0
         if args[1:2] == ["dumpsys"]:
             self.dumpsys_calls += 1
             flag = "true" if self.locked else "false"
@@ -342,50 +362,84 @@ def test_unlock_now_wakes_screen_before_swiping(pin_store, monkeypatch):
     assert wake < swipe < text
 
 
-def test_screen_off_keeps_auto_lock_away_then_restores(monkeypatch):
-    """按电源键之前先把「熄屏后自动锁定」顶成一天，熄屏后原值要交还回去。"""
-    adb = _FakeAdb()
+def test_screen_off_uses_display_command_on_android15(monkeypatch):
+    """Android 15+：直接关显示电源。设备不进睡眠，锁屏那套逻辑压根不启动。"""
+    adb = _FakeAdb(sdk=35)
     adb.settings[device._LOCK_TIMEOUT_KEY] = "5000"
-    adb.awake = False                        # 按完电源键后系统进入熄屏状态
     monkeypatch.setattr(device, "run_adb", adb)
     monkeypatch.setattr(device, "time", _FakeClock())
-    seen = {}
-    monkeypatch.setattr(device, "_restore_lock_timeout_later",
-                        lambda serial, orig: seen.update(serial=serial, orig=orig))
 
     r = device.screen_off("V2324A")
-    assert r["ok"] is True and "不会被锁定" in r["msg"]
-    assert ["shell", "settings", "put", "secure", device._LOCK_TIMEOUT_KEY,
-            str(device._SCREEN_OFF_KEEP_MS)] in adb.calls
+    assert r["ok"] is True and "不会锁定" in r["msg"]
+    assert ["shell", "cmd", "display", "power-off", "0"] in adb.calls
+    assert ["shell", "input", "keyevent", "26"] not in adb.calls     # 不按电源键
+    assert adb.settings[device._LOCK_TIMEOUT_KEY] == "5000"          # 也没动用户的设置
+
+
+def test_screen_off_falls_back_on_old_android(monkeypatch):
+    """Android 14 及以下没有那条命令：退回「顶住自动锁定 + 电源键」，并记住原值。"""
+    adb = _FakeAdb(sdk=34)
+    adb.settings[device._LOCK_TIMEOUT_KEY] = "5000"
+    adb.awake = False                       # 按完电源键后确实熄屏了
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+
+    r = device.screen_off("V2324A")
+    assert r["ok"] is True
     assert ["shell", "input", "keyevent", "26"] in adb.calls
-    for _ in range(100):                     # 还原在后台线程里，等它把原始值交出去
-        if seen:
-            break
-        time.sleep(0.01)
-    assert seen == {"serial": "V2324A", "orig": "5000"}
+    assert ["shell", "cmd", "display", "power-off", "0"] not in adb.calls
+    # 顶住的设置不能马上还原（提前还原等于没顶），要记到点亮屏幕时再还
+    assert adb.settings[device._LOCK_TIMEOUT_KEY] == str(device._SCREEN_OFF_KEEP_MS)
+    assert device._screen_off_held["V2324A"] == "5000"
+
+
+def test_screen_off_falls_back_when_display_command_missing(monkeypatch):
+    """Android 15 但这条命令报错（个别 ROM 裁掉了）：也要能退回电源键那条路。"""
+    adb = _FakeAdb(sdk=35)
+    adb.display_cmd_ok = False
+    adb.awake = False
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    r = device.screen_off("V2324A")
+    assert r["ok"] is True
+    assert ["shell", "input", "keyevent", "26"] in adb.calls
 
 
 def test_screen_off_reports_when_screen_stays_on(monkeypatch):
     """手机没熄屏时必须如实说，而不是假装成功。"""
-    adb = _FakeAdb()
-    adb.awake = True
+    adb = _FakeAdb(sdk=35)
+    adb.power_off_works = False             # 命令发了，屏还亮着
     monkeypatch.setattr(device, "run_adb", adb)
     monkeypatch.setattr(device, "time", _FakeClock())
-    monkeypatch.setattr(device, "_restore_lock_timeout_later", lambda serial, orig: None)
     r = device.screen_off("V2324A")
-    assert r["ok"] is False and "还亮着" in r["msg"]
+    assert r["ok"] is False and "亮着" in r["msg"]
 
 
-def test_screen_off_warns_when_lock_setting_cannot_be_written(monkeypatch):
-    """顶不住「自动锁定」时也照样熄屏，但要提醒用户可能会被锁上。"""
-    adb = _FakeAdb()
+def test_wake_screen_restores_lock_timeout(monkeypatch):
+    """点亮屏幕时要把顶住的「熄屏后自动锁定」还给用户。"""
+    adb = _FakeAdb(sdk=34)
+    adb.settings[device._LOCK_TIMEOUT_KEY] = "5000"
     adb.awake = False
-    adb.settings_fail = True
     monkeypatch.setattr(device, "run_adb", adb)
     monkeypatch.setattr(device, "time", _FakeClock())
-    r = device.screen_off("V2324A")
-    assert r["ok"] is True and "自动锁定" in r["msg"]
-    assert ["shell", "input", "keyevent", "26"] in adb.calls
+    device.screen_off("V2324A")
+    assert adb.settings[device._LOCK_TIMEOUT_KEY] == str(device._SCREEN_OFF_KEEP_MS)
+
+    device.wake_screen("V2324A")
+    assert adb.settings[device._LOCK_TIMEOUT_KEY] == "5000"
+    assert device._screen_off_held == {}
+    assert ["shell", "input", "keyevent", "224"] in adb.calls
+
+
+def test_release_lock_timeout_deletes_when_it_was_unset(monkeypatch):
+    """原来就没有这条设置的话，还原等于删掉，不能留下我们写的那条。"""
+    adb = _FakeAdb(sdk=34)
+    adb.awake = False
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    device.screen_off("V2324A")
+    device.release_lock_timeout("V2324A")
+    assert device._LOCK_TIMEOUT_KEY not in adb.settings
 
 
 def test_screen_off_never_raises(monkeypatch):

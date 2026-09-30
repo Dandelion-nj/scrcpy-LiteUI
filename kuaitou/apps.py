@@ -11,7 +11,9 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -19,7 +21,7 @@ import urllib.parse
 import urllib.request
 from difflib import SequenceMatcher, get_close_matches
 
-from .device import _serial_args, get_devices, get_startupinfo
+from .device import _serial_args, get_devices, get_startupinfo, run_adb
 from .storage import (
     APPS_CACHE_STREAM,
     ICON_DIR,
@@ -32,6 +34,7 @@ from .storage import (
     _ads_usable,
     _write_text,
     ads_path,
+    load_config,
     storage_read,
     storage_write,
 )
@@ -183,13 +186,18 @@ def _icon_ads_register(pkg):
                       json.dumps({"packages": keys}, ensure_ascii=False))
 
 def _icon_index_build():
-    """启动时把各处图标灌进索引。顺序即优先级：抓取的图标 > 可写目录 > 内置素材库。"""
+    """把各处图标灌进索引。顺序即优先级：手机传回 / 在线抓的图标 > 可写目录 > 内置素材库。
+
+    每次都用全新的索引对象：导入新图标后要重建索引，而旧表里已登记过的键不会被覆盖
+    （add 用 setdefault），拿旧表重建等于新图标顶不掉预置素材。
+    """
+    idx = _IconIndex()
     # 1) EXE 数据流里的图标（运行期抓到的；流不在目录里，只能靠索引流找回）
     for pkg in _icon_ads_keys():
         p = ads_path(ICON_STREAM_PREFIX + pkg + ".webp")
         try:
             if os.path.getsize(p) > 0:
-                _icon_index.add(pkg, p)
+                idx.add(pkg, p)
         except OSError:
             continue
     # 2) 目录里的图标（内置只读素材库 + ADS 不可用时的落盘兜底）
@@ -208,8 +216,11 @@ def _icon_index_build():
                     continue
             except OSError:
                 continue
-            _icon_index.add(stem, p)             # 可写目录先登记，优先于只读素材库
-    return _icon_index
+            idx.add(stem, p)                     # 可写目录先登记，优先于只读素材库
+    global _icon_index
+    with _icon_index_lock:
+        _icon_index = idx
+    return idx
 
 def _icon_index_add(pkg, path):
     """新抓到的图标写好后登记进索引，后续请求即可立刻命中。"""
@@ -845,3 +856,108 @@ def list_apps(serial, force=False):
 
 _icon_index_build()
 _load_apps_cache()
+
+# ============ 从手机导入图标 ============
+# 手机上的取图工具把图标导出成一个目录（文件名是包名最省事，是应用名也能认），这里把整个
+# 目录拉回来，转成 webp 写进可写图标库。导入的图标在查找顺序上排在预置素材库前面：手机传
+# 回来的是这台设备上真实在用的那张图，比我们预置的通用图准；没导入时自然还是用预置的。
+_ICON_PULL_TIMEOUT = 300        # 拉几百个图标走 USB 也就几秒，无线慢些，耐心给足
+
+def _looks_like_pkg(name):
+    return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+', name or ""))
+
+def _pkg_by_app_name():
+    """已扫到的应用「归一化名 → 包名」：图标文件名可能是「微信.png」这种。"""
+    table = {}
+    with _apps_lock:
+        for apps in (_apps_cache or {}).values():
+            for a in apps:
+                nk = _norm_app_name(a.get("name") or "")
+                if nk:
+                    table.setdefault(nk, a.get("package"))
+    return table
+
+def _ingest_icon_file(path, name_table):
+    """一个图标文件算出它的包名；认不出来返回 None。文件名优先当包名，其次当应用名。"""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    if _looks_like_pkg(stem):
+        return stem
+    return name_table.get(_norm_app_name(stem))
+
+def import_icons_from_device(serial=None, remote_dir=None):
+    """把手机上 remote_dir 里的图标收回来入库，返回 {ok, msg, imported, skipped}。
+
+    只认图片后缀；拉回临时目录、转完 webp 就删掉，磁盘上不留下这些中间文件。
+    入库后重建图标索引，导入的图标因此优先于随包预置的素材库。
+    """
+    cfg = load_config()
+    remote_dir = (remote_dir or cfg.get("icon_import_dir") or "").strip()
+    if not remote_dir:
+        return {"ok": False, "msg": "还没填手机上的图标目录：先到设置里填上"}
+    if not serial:
+        devs = get_devices()
+        serial = devs[0] if devs else None
+    if not serial:
+        return {"ok": False, "msg": "没有已连接的设备"}
+    out, err, code = run_adb(["shell", "ls", "-1", remote_dir], timeout=30, serial=serial)
+    text = out + err
+    if code != 0 or "No such" in text:
+        return {"ok": False, "msg": "手机上找不到 %s：确认取图工具导出到哪个目录" % remote_dir}
+    images = [n.strip() for n in out.splitlines()
+              if os.path.splitext(n.strip())[1].lower() in ICON_EXTS]
+    if not images:
+        return {"ok": False, "msg": "%s 里没有图片：先在手机上把图标导出到这个目录" % remote_dir}
+    tmp = tempfile.mkdtemp(prefix="kuaitou_icons_")
+    imported, skipped = 0, 0
+    try:
+        _, perr, pcode = run_adb(["pull", remote_dir, tmp],
+                                 timeout=_ICON_PULL_TIMEOUT, serial=serial)
+        if pcode != 0:
+            return {"ok": False, "msg": "拉取图标失败：%s" % ((perr or "").strip() or "adb pull 出错")}
+        name_table = _pkg_by_app_name()
+        for root, _dirs, files in os.walk(tmp):
+            for fn in files:
+                if os.path.splitext(fn)[1].lower() not in ICON_EXTS:
+                    continue
+                full = os.path.join(root, fn)
+                pkg = _ingest_icon_file(full, name_table)
+                if not pkg:
+                    skipped += 1
+                    continue
+                try:
+                    with open(full, "rb") as f:
+                        webp = _icon_bytes_to_webp(f.read())
+                except Exception:
+                    webp = None
+                if not webp or not _write_icon(pkg, webp):
+                    skipped += 1
+                    continue
+                imported += 1
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    if imported:
+        _icon_index_build()          # 重建索引：导入的图标要排在预置素材库前面
+        msg = "已导入 %d 个图标，应用列表会优先用它们" % imported
+        if skipped:
+            msg += "；%d 个跳过（认不出包名或图片不合格）" % skipped
+        return {"ok": True, "msg": msg, "imported": imported, "skipped": skipped}
+    return {"ok": False, "imported": 0, "skipped": skipped,
+            "msg": "没能导入：%d 个文件都认不出包名或图片不合格（文件名建议直接用包名）" % skipped}
+
+def launch_icon_tool(package=None, serial=None):
+    """在手机上打开取图工具（monkey 拉起它的启动页），返回 {ok, msg}。"""
+    pkg = (package or load_config().get("icon_tool_package") or "").strip()
+    if not pkg:
+        return {"ok": False, "msg": "还没填取图工具的包名：先到设置里填上再点这个按钮"}
+    if not serial:
+        devs = get_devices()
+        serial = devs[0] if devs else None
+    if not serial:
+        return {"ok": False, "msg": "没有已连接的设备"}
+    out, err, code = run_adb(["shell", "monkey", "-p", pkg, "-c",
+                              "android.intent.category.LAUNCHER", "1"],
+                             timeout=30, serial=serial)
+    text = out + err
+    if code != 0 or "No activities found" in text or "aborted" in text.lower():
+        return {"ok": False, "msg": "没能打开 %s：确认这台手机上装了这个应用" % pkg}
+    return {"ok": True, "msg": "已在手机上打开取图工具：导出图标后，回来点「从手机导入图标」"}

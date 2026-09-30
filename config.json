@@ -13,5 +13,7 @@
   "fps": "60",
   "audio_mode": "both",
   "quick_launch": {},
-  "minimize_to_tray": false
+  "minimize_to_tray": false,
+  "icon_tool_package": "",
+  "icon_import_dir": "/sdcard/Download/icons"
 }

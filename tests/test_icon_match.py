@@ -4,6 +4,8 @@
 不依赖真实素材库，也不碰网络。
 """
 
+from pathlib import Path
+
 import pytest
 
 from kuaitou import apps
@@ -173,3 +175,142 @@ def test_alias_overseas_name(monkeypatch):
     monkeypatch.setattr(apps, "_icon_index", index)
     assert apps._alias_icon("Telegram") == "/icons/telegram.webp"
     assert apps._alias_icon("ChatGPT") == "/icons/chatgpt.webp"
+
+
+# ---------- 从手机导入图标 ----------
+# 手机上取图工具导出的图标收回电脑：文件名优先当包名，其次当应用名；
+# 收回来后要排在预置素材库前面（用户原话：传回后优先用手机传回的图片）。
+
+def _img(p):
+    """铺一个假图片文件：导入流程只看文件名与字节，内容无所谓。"""
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" if "bad" not in p.name else b"BAD-DATA")
+    return p
+
+
+def test_looks_like_pkg():
+    assert apps._looks_like_pkg("com.tencent.mm")
+    assert apps._looks_like_pkg("cn.kuwo.player")
+    assert not apps._looks_like_pkg("微信")
+    assert not apps._looks_like_pkg("wechat")
+
+
+def test_ingest_icon_file_prefers_package_name(tmp_path):
+    f = _img(tmp_path / "com.tencent.mm.png")
+    assert apps._ingest_icon_file(str(f), {}) == "com.tencent.mm"
+
+
+def test_ingest_icon_file_falls_back_to_app_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(apps, "_apps_cache",
+                        {"SN": [{"name": "微信", "package": "com.tencent.mm"}]})
+    table = apps._pkg_by_app_name()
+    assert apps._ingest_icon_file(str(_img(tmp_path / "微信.png")), table) == "com.tencent.mm"
+    assert apps._ingest_icon_file(str(_img(tmp_path / "认不出来.png")), table) is None
+
+
+class _FakeImportAdb:
+    """假 adb：ls 给一份名单，pull 就地铺出同名文件。"""
+
+    def __init__(self, names, ls_out=None, pull_code=0):
+        self.names = names
+        self.ls_out = ls_out if ls_out is not None else "\n".join(names)
+        self.pull_code = pull_code
+        self.calls = []
+
+    def __call__(self, args, timeout=8, serial=None):
+        self.calls.append(args)
+        if args[:3] == ["shell", "ls", "-1"]:
+            return self.ls_out, "", 0
+        if args[0] == "pull":
+            for n in self.names:
+                _img(Path(args[2]) / "icons" / n)
+            return "", ("" if self.pull_code == 0 else "error: closed"), self.pull_code
+        return "", "", 0
+
+
+def _patch_import(monkeypatch, names, written, rebuilt, **kw):
+    adb = _FakeImportAdb(names, **kw)
+    monkeypatch.setattr(apps, "run_adb", adb)
+    monkeypatch.setattr(apps, "load_config", lambda: {"icon_import_dir": "/sdcard/ic"})
+    monkeypatch.setattr(apps, "get_devices", lambda: ["SN-1"])
+    monkeypatch.setattr(apps, "_apps_cache",
+                        {"SN-1": [{"name": "微信", "package": "com.tencent.mm"}]})
+    monkeypatch.setattr(apps, "_icon_bytes_to_webp",
+                        lambda raw, size=256: None if raw.startswith(b"BAD") else b"w")
+    monkeypatch.setattr(apps, "_write_icon",
+                        lambda pkg, data: written.append(pkg) or ("/x/%s.webp" % pkg))
+    monkeypatch.setattr(apps, "_icon_index_build", lambda: rebuilt.append(1))
+    return adb
+
+
+def test_import_icons_ingests_and_reports(monkeypatch):
+    """包名文件名 + 应用名文件名都能入库；认不出的、图片不合格的算跳过。"""
+    written, rebuilt = [], []
+    _patch_import(monkeypatch,
+                  ["com.tencent.mm.png", "微信.png", "bad.com.foo.png", "说明.txt"],
+                  written, rebuilt)
+    r = apps.import_icons_from_device("SN-1")
+    assert r["ok"] is True and r["imported"] == 2 and r["skipped"] == 1
+    assert written == ["com.tencent.mm", "com.tencent.mm"]
+    assert rebuilt == [1]                     # 入库后重建索引，导入的图标才会排到前面
+    assert "已导入 2 个图标" in r["msg"]
+
+
+def test_import_icons_rejects_dir_without_images(monkeypatch):
+    written, rebuilt = [], []
+    _patch_import(monkeypatch, ["a.txt"], written, rebuilt)
+    r = apps.import_icons_from_device("SN-1")
+    assert r["ok"] is False and "没有图片" in r["msg"]
+    assert written == [] and rebuilt == []
+
+
+def test_import_icons_reports_missing_dir(monkeypatch):
+    written, rebuilt = [], []
+    _patch_import(monkeypatch, [], written, rebuilt,
+                  ls_out="ls: /sdcard/ic: No such file or directory")
+    r = apps.import_icons_from_device("SN-1")
+    assert r["ok"] is False and "找不到" in r["msg"]
+
+
+def test_import_icons_reports_pull_failure(monkeypatch):
+    written, rebuilt = [], []
+    _patch_import(monkeypatch, ["com.a.b.png"], written, rebuilt, pull_code=1)
+    r = apps.import_icons_from_device("SN-1")
+    assert r["ok"] is False and "拉取图标失败" in r["msg"]
+    assert written == []
+
+
+def test_import_icons_without_device(monkeypatch):
+    written, rebuilt = [], []
+    _patch_import(monkeypatch, [], written, rebuilt)
+    monkeypatch.setattr(apps, "get_devices", lambda: [])
+    r = apps.import_icons_from_device(None)
+    assert r["ok"] is False and "没有已连接的设备" in r["msg"]
+
+
+def test_imported_icon_wins_over_bundled(tmp_path, monkeypatch):
+    """索引重建后，手机传回的图标必须排在预置素材库前面。"""
+    from_phone = _img(tmp_path / "phone" / "icon_com.foo.bar.webp")
+    bundled = tmp_path / "bundled"
+    _img(bundled / "com.foo.bar.webp")
+    monkeypatch.setattr(apps, "_icon_ads_keys", lambda: ["com.foo.bar"])
+    monkeypatch.setattr(apps, "ads_path", lambda stream: str(from_phone))
+    monkeypatch.setattr(apps, "ICON_SEARCH_DIRS", [str(bundled)])
+    monkeypatch.setattr(apps, "_icon_index", apps._icon_index)   # 会换掉全局索引，跑完还原
+    apps._icon_index_build()
+    assert apps.find_cached_icon("com.foo.bar") == str(from_phone)
+
+
+def test_launch_icon_tool_needs_package(monkeypatch):
+    monkeypatch.setattr(apps, "load_config", lambda: {"icon_tool_package": ""})
+    r = apps.launch_icon_tool(serial="SN-1")
+    assert r["ok"] is False and "包名" in r["msg"]
+
+
+def test_launch_icon_tool_reports_missing_app(monkeypatch):
+    monkeypatch.setattr(apps, "load_config", lambda: {"icon_tool_package": "com.x.y"})
+    monkeypatch.setattr(apps, "run_adb",
+                        lambda args, timeout=8, serial=None:
+                        ("", "** No activities found to run, monkey aborted.", 1))
+    r = apps.launch_icon_tool(serial="SN-1")
+    assert r["ok"] is False and "没能打开" in r["msg"]

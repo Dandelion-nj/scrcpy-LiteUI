@@ -19,7 +19,7 @@ import urllib.request
 
 import webview
 
-from .apps import _app_name, list_apps, request_icon
+from .apps import _app_name, import_icons_from_device, launch_icon_tool, list_apps, request_icon
 from .device import (
     CLASSIC_ADB_PORT,
     _device_model,
@@ -288,13 +288,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(unlock_now(serial))
 
         elif path == '/api/screen/off':
-            # 顶栏「关闭物理屏幕」：按电源键熄屏，但临时顶住系统的「熄屏后自动锁定」，
-            # 手机只是黑屏、不会被锁上
+            # 顶栏「关闭物理屏幕」：Android 15+ 只关显示不锁屏；老系统退回电源键那条路
             serial = body.get('serial', '')
             if not serial:
                 self.send_json({"ok": False, "error": "no serial"}, 400)
                 return
             self.send_json(screen_off(serial))
+
+        elif path == '/api/icon/tool':
+            # 在手机上打开取图工具，用户在手机上导出图标后再点「从手机导入图标」
+            self.send_json(launch_icon_tool(package=body.get('package', ''),
+                                            serial=body.get('serial', '') or None))
+
+        elif path == '/api/icon/import':
+            # 把手机上导出的图标收回来入库（入库后优先于随包预置的素材库）
+            self.send_json(import_icons_from_device(serial=body.get('serial', '') or None))
 
         elif path == '/api/config':
             save_config(body)
