@@ -351,6 +351,26 @@ def test_sync_icons_failure_keeps_device_unmarked(monkeypatch):
     assert apps._synced_keys() == set()
 
 
+def test_sync_key_carries_the_icon_format(monkeypatch):
+    """记录键带上取图格式版本：dex 换了渲染方式后老记录自动作废，设备下次连上重取一份。"""
+    monkeypatch.setattr(apps, "device_key", lambda serial: "V2324A")
+    assert apps._sync_key("172.19.163.3:5555") == apps._ICON_SYNC_FORMAT + ":V2324A"
+
+
+def test_sync_key_empty_without_device(monkeypatch):
+    monkeypatch.setattr(apps, "device_key", lambda serial: "")
+    assert apps._sync_key("") == ""
+
+
+def test_synced_keys_drops_legacy_entries(monkeypatch):
+    """上一版留下的、不带格式前缀的老键不再算数，读的时候顺手丢掉。"""
+    monkeypatch.setattr(apps, "_synced_cache", None)
+    monkeypatch.setattr(apps, "storage_read",
+                        lambda stream, binary=False: '["V2324A", "%s:V2324A"]'
+                        % apps._ICON_SYNC_FORMAT)
+    assert apps._synced_keys() == {apps._ICON_SYNC_FORMAT + ":V2324A"}
+
+
 def test_auto_sync_runs_once_per_device(monkeypatch):
     """状态接口每 3 秒轮询一次，不能每轮都去装一遍、拉一遍。"""
     runs = []

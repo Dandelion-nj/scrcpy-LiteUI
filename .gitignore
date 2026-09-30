@@ -20,6 +20,10 @@ icons/
 # 打包中间产物
 KuaitouBuild.spec.bak
 
+# scrcpy 源码：只当参考用（本项目不改它），1.7 MB / 371 个文件入库只会让
+# diff 和克隆都很吵，需要时本地放一份即可
+scrcpy-4.1/
+
 # 编辑器 / 系统
 .vscode/
 .idea/

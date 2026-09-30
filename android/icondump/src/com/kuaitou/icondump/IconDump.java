@@ -19,6 +19,8 @@ import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Path;
+import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.os.IBinder;
 import android.util.DisplayMetrics;
@@ -132,6 +134,20 @@ public final class IconDump {
                 .newInstance(am, dm, new Configuration());
     }
 
+    /** 这个图标是不是自适应图标（Android 8+ 的主流形式）。
+     *
+     * 按类名逐级往上比，不用 instanceof：AdaptiveIconDrawable 在 API 26 才有，
+     * 直接引用它在更老的设备上会 NoClassDefFoundError。
+     */
+    private static boolean isAdaptive(Drawable d) {
+        for (Class<?> c = d.getClass(); c != null; c = c.getSuperclass()) {
+            if ("android.graphics.drawable.AdaptiveIconDrawable".equals(c.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 把一个 Drawable 画成 PNG 字节写进 zip。 */
     private static void writeIcon(ZipOutputStream zos, String pkg, Drawable d) throws Exception {
         int w = d.getIntrinsicWidth();
@@ -141,6 +157,17 @@ public final class IconDump {
         }
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
+        if (isAdaptive(d)) {
+            // 自适应图标原样画出来是满幅的方块：背景层会铺满整块画布，只有前景（图标本体）
+            // 会被 AdaptiveIconDrawable 自己按可见区缩进去。桌面上看到的是带圆角遮罩的样子，
+            // 这里补上同样的圆角裁剪，导出后就跟内置素材库的图标一个风格了。
+            // 注意别再自己放大前景：缩放已经由 AdaptiveIconDrawable 内部按可见区做过了，
+            // 再放一档会让图标顶满整块画布，比素材库里的明显大一圈。
+            float r = Math.min(w, h) * 0.25f;      // 圆角半径取边长的 1/4，与界面上的卡片一致
+            Path mask = new Path();
+            mask.addRoundRect(new RectF(0, 0, w, h), r, r, Path.Direction.CW);
+            c.clipPath(mask);
+        }
         d.setBounds(0, 0, w, h);
         d.draw(c);
         zos.putNextEntry(new ZipEntry(pkg + ".png"));

@@ -987,10 +987,15 @@ def sync_icons_from_device(serial=None):
 # 图标抓到后会存进 EXE 数据流（icon_<包名>.webp + icon_index.json），是持久化的，所以
 # 没必要每次连上都重取一遍（手机上装装卸卸的应用不会天天变）。这里按硬件序列号登记，
 # USB 与无线接的是同一台手机，共用一份记录。想立刻重取：首页点「刷新」。
+#
+# 记录键带一个「取图格式」前缀：dex 换了渲染方式（比如给图标补圆角遮罩）就来升一版，
+# 老记录自然对不上号，设备下次连上会自动重取一遍——否则旧图标会一直留在数据流里，
+# 用户不点「刷新」就看不到新效果。
+_ICON_SYNC_FORMAT = "v2"
 
 def _synced_keys():
     """读「已经取过图标的设备」表。进程内缓存一份：界面每 3 秒轮询一次状态，
-    每次都去读数据流太亏。"""
+    每次都去读数据流太亏。旧格式（改渲染方式之前）的键直接丢掉，不再占着位置。"""
     global _synced_cache
     if _synced_cache is None:
         keys = set()
@@ -999,7 +1004,8 @@ def _synced_keys():
             try:
                 data = json.loads(raw)
                 if isinstance(data, list):
-                    keys = {k for k in data if isinstance(k, str) and k}
+                    keys = {k for k in data
+                            if isinstance(k, str) and k.startswith(_ICON_SYNC_FORMAT + ":")}
             except Exception:
                 keys = set()
         _synced_cache = keys
@@ -1011,11 +1017,12 @@ def _save_synced_keys(keys):
     storage_write(ICON_SYNCED_STREAM, json.dumps(sorted(keys), ensure_ascii=False))
 
 def _sync_key(serial):
-    """设备身份键：优先硬件序列号，取不到就退回 adb 序列号。"""
+    """设备身份键：硬件序列号（取不到就退回 adb 序列号），前面带上取图格式版本。"""
     try:
-        return device_key(serial) or (serial or "")
+        key = device_key(serial) or (serial or "")
     except Exception:
-        return serial or ""
+        key = serial or ""
+    return "%s:%s" % (_ICON_SYNC_FORMAT, key) if key else ""
 
 def _mark_synced(serial):
     key = _sync_key(serial)
