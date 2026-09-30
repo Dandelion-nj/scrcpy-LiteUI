@@ -3,6 +3,9 @@
 adb 一律不打真的：把 run_adb 换成返回固定输出的假函数，只验证解析与选择逻辑。
 """
 
+import threading
+import time
+
 import pytest
 
 from kuaitou import device
@@ -102,13 +105,17 @@ def test_serial_args_prefers_usb_when_multiple(monkeypatch):
 # adb 也全部换成假函数：只验证身份键、解锁流程与缓存，不发一条真命令。
 
 @pytest.fixture(autouse=True)
-def _clear_unlock_caches():
+def _clear_unlock_caches(monkeypatch):
     """身份键 / 锁屏状态 / API 级别 / 顶住的自动锁定都是模块级状态，测试间必须清掉。"""
+    monkeypatch.setattr(device, "_VOLUME_SETTLE", 0)   # 音量按键后的等待别真等
+    # 数据流写入一律吞掉：音量处理会往投屏日志里记一笔，测试不该污染用户真实的日志文件
+    monkeypatch.setattr(device, "storage_write", lambda *a, **k: ("mem", True))
     def clear():
         device._device_key_cache.clear()
         device._lock_cache.clear()
         device._sdk_cache.clear()
         device._screen_off_held.clear()
+        device._boosted_volume.clear()
     clear()
     yield
     clear()
@@ -149,6 +156,12 @@ class _FakeAdb:
         self.sdk = sdk              # 35 = Android 15：才有 cmd display power-off
         self.display_cmd_ok = True  # 置 False 模拟老系统里这条命令报错
         self.power_off_works = True  # 置 False 模拟「命令发了但屏幕没关」
+        self.volume = 5             # 媒体音量
+        self.volume_max = 15
+        self.volume_step = 10       # 按一下音量键的步进（真机 150 档位是 10 一格）
+        self.set_works = True       # 置 False 模拟 ROM 把 --set 悄悄回滚（真机 vivo 就是这样）
+        self.legacy_media = False   # 置 True 模拟老系统上还在的 `media` 命令
+        self.volume_set_calls = []  # 每次 --set 收到的值，用来验证「拉满 → 还原」的顺序
         self.locked = False
         self.awake = True           # dumpsys power 里的亮屏状态
         self.screen_state = "ON"    # dumpsys display 里的 mScreenState
@@ -157,6 +170,18 @@ class _FakeAdb:
         self.dumpsys_calls = 0
         self.calls = []
         self.on_text = None      # 收到 input text 时回调（用来模拟解锁生效）
+
+    def _volume_cmd(self, args):
+        """音量命令：输出照抄真机（含 `will control stream=3` 那句回显），好验证解析不跑偏。"""
+        if "--set" in args:
+            vol = int(args[args.index("--set") + 1])
+            self.volume_set_calls.append(vol)
+            if self.set_works:
+                self.volume = vol
+            return "[V] will set volume to index=%d\n" % vol, "", 0
+        return ("[V] will control stream=3 (STREAM_MUSIC)\n"
+                "[V] will get volume\n"
+                "[V] volume is %d in range [0..%d]\n" % (self.volume, self.volume_max), "", 0)
 
     def __call__(self, args, timeout=8, serial=None):
         self.calls.append(args)
@@ -176,11 +201,23 @@ class _FakeAdb:
                 return "", "cmd: Can't find service: display", 1
             self.screen_state = "ON"
             return "Display power on: 0\n", "", 0
+        if args[1:3] == ["cmd", "media_session"]:
+            return self._volume_cmd(args)
+        if args[1:2] == ["media"]:
+            if not self.legacy_media:
+                # Android 16 起这条命令没了，真机报的就是这句
+                return "", "media: inaccessible or not found\n", 127
+            return self._volume_cmd(args)
         if args[1:3] == ["dumpsys", "power"]:
             flag = "Awake" if self.awake else "Asleep"
             return "  mWakefulness=%s\n" % flag, "", 0
         if args[1:3] == ["dumpsys", "display"]:
             return "  mScreenState=%s\n" % self.screen_state, "", 0
+        if args[1:3] == ["dumpsys", "audio"]:
+            # 真机 `dumpsys audio` 里 STREAM_MUSIC 那一段的写法
+            return ("  STREAM_MUSIC: Muted: false, Min: 0, Max: %d, streamVolume:%d,"
+                    " Current: 2 (speaker): 0\n"
+                    % (self.volume_max, self.volume), "", 0)
         if args[1:2] == ["dumpsys"]:
             self.dumpsys_calls += 1
             flag = "true" if self.locked else "false"
@@ -198,6 +235,14 @@ class _FakeAdb:
             return "", "", 0
         if args[1:2] == ["wm"]:
             return "Physical size: 1080x2400\n", "", 0
+        if args[1:3] == ["input", "keyevent"]:
+            # 一次调用可以带多个键码：真机 `input keyevent 24 24 24` 会连按三下
+            for code in args[3:]:
+                if code not in ("24", "25"):
+                    continue
+                step = self.volume_step if code == "24" else -self.volume_step
+                self.volume = max(0, min(self.volume_max, self.volume + step))
+            return "", "", 0
         if args[1:3] == ["input", "text"] and self.on_text:
             self.on_text()
         return "", "", 0
@@ -215,6 +260,9 @@ class _FakeClock:
 
     def sleep(self, sec):
         self.now += sec
+
+    def strftime(self, fmt):
+        return "00:00:00"        # 日志时间戳：固定一个值就行，别让日志写崩
 
 
 def _sends_input(adb):
@@ -525,3 +573,284 @@ def test_unlock_now_never_raises(pin_store, monkeypatch):
     monkeypatch.setattr(device, "time", _FakeClock())
     r = device.unlock_now("V2324A")
     assert r["ok"] is False and r["msg"]
+
+
+# ---------- 「仅电脑播放」时拉满手机音量 ----------
+# scrcpy 抓的是手机输出的那路声音，手机音量压着电脑这边就没声 / 很小；
+# 所以起投屏之前拉满，关掉投屏窗口再还给用户。
+
+class _FakeProc:
+    """假投屏进程：finish() 之后 wait() 才返回，用来观察「关窗后还原」。"""
+
+    def __init__(self):
+        self.pid = 4242
+        self._done = threading.Event()
+
+    def finish(self):
+        self._done.set()
+
+    def wait(self, timeout=None):
+        self._done.wait(timeout or 5)
+        return 0
+
+    def poll(self):
+        return 0 if self._done.is_set() else None
+
+
+def test_media_volume_parses_range_output(monkeypatch):
+    """`volume is 7 in range [0..15]`：老实现按 split()[-1] 取到的是 "[0..15]"，
+    解析一直失败 → 音量从来没被读到过。"""
+    adb = _FakeAdb()
+    adb.volume, adb.volume_max = 7, 15
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.get_media_volume("V2324A") == 7
+    assert device._media_volume("V2324A") == (7, 15)
+
+
+def test_media_volume_output_echo_is_not_the_volume(monkeypatch):
+    """`cmd media_session` 会先回显 `will control stream=3`：那个 3 不是音量，
+    所以不能"把输出里的数字都抓出来"。"""
+    adb = _FakeAdb()
+    adb.volume = 12
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device._media_volume("V2324A") == (12, 15)
+
+
+def test_media_volume_reads_without_legacy_media_command(monkeypatch):
+    """真机（Android 16）没有 `media` 这条命令，必须靠 `cmd media_session` 读。"""
+    adb = _FakeAdb()
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.get_media_volume("V2324A") == 5
+    assert ["shell", "cmd", "media_session", "volume", "--stream", "3", "--get"] in adb.calls
+
+
+def test_media_volume_falls_back_to_legacy_command(monkeypatch):
+    """更老的系统上 `cmd media_session` 未必有，那就走 `media`。"""
+    adb = _FakeAdb()
+    adb.legacy_media = True
+    adb.volume = 9
+    monkeypatch.setattr(device, "run_adb",
+                        lambda args, timeout=8, serial=None:
+                        ("", "", 1) if args[1:3] == ["cmd", "media_session"]
+                        else adb(args, timeout, serial))
+    assert device.get_media_volume("V2324A") == 9
+
+
+def test_set_media_volume_falls_back_to_keys_when_rom_reverts(monkeypatch):
+    """真机实测：`--set` 返回成功却被 ROM 立刻回滚，只有音量键真的管用。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    adb.set_works = False
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.set_media_volume(15, "V2324A") is True
+    assert adb.volume == 15
+    ups = [a for a in adb.calls if a[1:4] == ["input", "keyevent", "24"]]
+    assert len(ups) == 2            # 4 → 14 → 15
+
+
+def test_set_media_volume_gives_up_when_volume_is_pinned(monkeypatch):
+    """音量键也推不动（被前台的播放器顶回来）时如实返回失败，别谎报。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    adb.set_works = False
+    adb.volume_step = 0
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.set_media_volume(15, "V2324A") is False
+    assert adb.volume == 4
+
+
+def test_set_media_volume_does_not_overshoot_unreachable_target(monkeypatch):
+    """原值不是步进的整数倍时（真机 150 档 / 步进 10，用户原值 36 这种），音量键根本按不到
+    那个数：宁可最后差一格，也不能按过头——曾经把 36 一路按到 0。"""
+    adb = _FakeAdb()
+    adb.volume_max = 150
+    adb.volume_step = 10
+    adb.volume = 150
+    adb.set_works = False
+    monkeypatch.setattr(device, "run_adb", adb)
+    device.set_media_volume(36, "V2324A")
+    assert 30 <= adb.volume <= 40
+
+
+def test_media_volume_parses_bare_number(monkeypatch):
+    """个别系统只回一个数字：当当前值用，上限未知。"""
+    monkeypatch.setattr(device, "run_adb", _fake_adb("5\n"))
+    assert device._media_volume("V2324A") == (5, -1)
+
+
+def test_media_volume_unreadable(monkeypatch):
+    monkeypatch.setattr(device, "run_adb", _fake_adb(""))
+    assert device._media_volume("V2324A") == (-1, -1)
+
+
+def test_boost_media_volume_sets_max_then_restores(monkeypatch):
+    adb = _FakeAdb()
+    adb.volume = 4
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.boost_media_volume("V2324A") == 4
+    assert adb.volume == adb.volume_max
+    device.restore_media_volume("V2324A")
+    assert adb.volume == 4
+    assert adb.volume_set_calls == [15, 4]
+    assert device._boosted_volume == {}
+
+
+def test_boost_media_volume_remembers_original_only_once(monkeypatch):
+    """同一台手机连着开两个窗口时，别把「已经拉满的 15」当成原值记进登记表。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    monkeypatch.setattr(device, "run_adb", adb)
+    device.boost_media_volume("V2324A")
+    device.boost_media_volume("V2324A")
+    assert device._boosted_volume == {"V2324A": 4}
+    device.restore_media_volume("V2324A")
+    assert adb.volume == 4
+
+
+def test_boost_media_volume_registers_nothing_when_it_cannot_change(monkeypatch):
+    """没真拉上去就别登记：否则关窗口时反而会去动一个我们没改过的音量。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    adb.set_works = False
+    adb.volume_step = 0
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.boost_media_volume("V2324A") is None
+    assert device._boosted_volume == {}
+
+
+def test_boost_media_volume_skips_when_already_max(monkeypatch):
+    adb = _FakeAdb()
+    adb.volume = adb.volume_max
+    monkeypatch.setattr(device, "run_adb", adb)
+    assert device.boost_media_volume("V2324A") is None
+    assert device._boosted_volume == {}
+    device.restore_media_volume("V2324A")        # 没拉满过，还原是空操作
+    assert adb.volume_set_calls == []
+
+
+def test_boost_media_volume_gives_up_when_unreadable(monkeypatch):
+    """读不到音量就什么都不做：宁可没声音，也别乱改用户的设置。"""
+    monkeypatch.setattr(device, "run_adb", _fake_adb(""))
+    assert device.boost_media_volume("V2324A") is None
+    assert device._boosted_volume == {}
+
+
+def test_boost_media_volume_never_raises(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("adb 没了")
+
+    monkeypatch.setattr(device, "run_adb", boom)
+    assert device.boost_media_volume("V2324A") is None
+
+
+def test_restore_all_media_volume_covers_every_device(monkeypatch):
+    """退出应用时要一次还清——关窗走的是 os._exit，等投屏线程收尾来不及。"""
+    adb = _FakeAdb()
+    monkeypatch.setattr(device, "run_adb", adb)
+    adb.volume = 3
+    device.boost_media_volume("SN-A")
+    adb.volume = 6
+    device.boost_media_volume("SN-B")
+    device.restore_all_media_volume()
+    assert device._boosted_volume == {}
+    assert adb.volume_set_calls == [15, 15, 3, 6]
+
+
+def _wait_until(cond, timeout=5):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return cond()
+
+
+def test_recheck_boost_volume_pulls_the_volume_back_up(monkeypatch):
+    """真机实测：镜像一开，ROM 按「输出设备的记忆值」把音量拉回去（70 → 40 都见过），
+    所以投屏起来后要复查几遍，把它重新拉满。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())     # 复查要等好几秒，测试不该真等
+    assert device.boost_media_volume("V2324A") == 4
+
+    adb.volume = 6                       # 镜像起来后 ROM 把音量拉回去了
+    device.recheck_boost_volume("V2324A")
+    assert _wait_until(lambda: adb.volume == adb.volume_max)
+    assert device._boosted_volume == {"V2324A": 4}        # 原值还是启动时那个 4
+
+
+def test_recheck_boost_volume_leaves_volume_alone_without_boost(monkeypatch):
+    """没拉满过（选的是手机出声）就什么都不做，不能去动用户自己的音量。"""
+    adb = _FakeAdb()
+    adb.volume = 6
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    device.recheck_boost_volume("V2324A")
+    time.sleep(0.1)                      # 假时钟让那几轮复查瞬间跑完
+    assert adb.volume == 6
+    assert adb.volume_set_calls == []
+
+
+def test_recheck_boost_volume_does_not_fight_restore(monkeypatch):
+    """关窗口后复查线程不能把还原好的音量又拉满——真机上这个交叉会把音量留在最高。"""
+    adb = _FakeAdb()
+    adb.volume = 4
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    device.boost_media_volume("V2324A")
+    device.recheck_boost_volume("V2324A")
+    device.restore_media_volume("V2324A")
+    assert adb.volume == 4
+    time.sleep(0.1)                      # 复查线程跑完剩下的轮次
+    assert adb.volume == 4
+    assert device._boosted_volume == {}
+
+
+def test_launch_desktop_boosts_before_launch_then_restores(monkeypatch):
+    """选「仅电脑播放」：起 scrcpy 之前就拉满，窗口关掉后还原。"""
+    adb = _FakeAdb()
+    adb.volume = 5
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "load_config", lambda: {"audio_mode": "pc"})
+    monkeypatch.setattr(device, "_close_child_log", lambda pid: None)
+    monkeypatch.setattr(device, "_BOOST_RECHECKS", ())   # 投屏后的复查另有专门用例，这里别留后台线程
+    proc = _FakeProc()
+    seen = {}
+
+    def fake_spawn(cmd, tag="scrcpy"):
+        seen["volume_at_launch"] = adb.volume
+        seen["cmd"] = cmd
+        return proc
+
+    monkeypatch.setattr(device, "_spawn", fake_spawn)
+    device.launch_desktop("V2324A")
+    assert seen["volume_at_launch"] == adb.volume_max
+    assert "--no-audio" not in seen["cmd"]
+
+    proc.finish()                                # 窗口关掉 → 后台线程还原音量
+    deadline = time.time() + 5
+    while device._boosted_volume and time.time() < deadline:
+        time.sleep(0.01)
+    assert device._boosted_volume == {}
+    assert adb.volume == 5
+
+
+def test_launch_desktop_leaves_volume_alone_in_phone_mode(monkeypatch):
+    adb = _FakeAdb()
+    adb.volume = 5
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "load_config", lambda: {"audio_mode": "phone"})
+    monkeypatch.setattr(device, "_close_child_log", lambda pid: None)
+    monkeypatch.setattr(device, "_BOOST_RECHECKS", ())
+    proc = _FakeProc()
+    seen = {}
+
+    def fake_spawn(cmd, tag="scrcpy"):
+        seen["cmd"] = cmd
+        return proc
+
+    monkeypatch.setattr(device, "_spawn", fake_spawn)
+    device.launch_desktop("V2324A")
+    assert "--no-audio" in seen["cmd"]
+    assert adb.volume_set_calls == []

@@ -217,10 +217,6 @@ body {
 .pin-row input:focus { border-color: var(--accent); }
 .pin-row .btn { flex-shrink: 0; }
 
-/* 设置页「图标」：两个入口 + 结果提示 */
-.icon-tools { display: flex; flex-wrap: wrap; gap: 8px; }
-.icon-tools .btn:disabled { opacity: 0.5; cursor: default; }
-
 #hintText { color: var(--accent); }
 
 .section {
@@ -694,26 +690,6 @@ mark {
         <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码再点「保存」（点「清除」则不再为这台手机提供解锁），之后点顶栏该设备旁边的「🔓 解锁」，程序会在后台点亮屏幕、静默上滑并输入密码。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
         <div class="pin-list" id="unlockList"></div>
       </div>
-
-      <div class="section">
-        <div class="section-title">图标</div>
-        <div class="section-desc">应用图标默认取自随包内置的素材库，抓不到的就留一个首字母占位。手机上的取图工具能导出这台手机真实在用的图标：在手机上导出后点「从手机导入图标」，导入的图标会优先于内置素材库显示。图标文件名建议直接用包名（如 com.tencent.mm.png），用应用名也能认。</div>
-        <div class="row-2" style="margin-bottom:12px">
-          <div class="form-group" style="margin-bottom:0">
-            <label>取图工具包名（可留空）</label>
-            <input id="icon_tool_package" placeholder="如 com.xxx.iconpicker" onchange="saveConfig()">
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label>图标导出目录（手机上的路径）</label>
-            <input id="icon_import_dir" placeholder="/sdcard/Download/icons" onchange="saveConfig()">
-          </div>
-        </div>
-        <div class="icon-tools">
-          <button class="btn" id="iconToolBtn" onclick="openIconTool()">📱 打开手机上的取图工具</button>
-          <button class="btn btn-primary" id="iconImportBtn" onclick="importIcons()">📥 从手机导入图标</button>
-        </div>
-        <div class="scan-hint" id="iconHint">导入的图标写进「快投.exe」的数据流，换电脑不会跟着走；同一台电脑上所有设备共用一份。</div>
-      </div>
     </div>
 
     <div class="tab-pane" id="pane-screen">
@@ -783,7 +759,7 @@ mark {
           <select id="audio_mode" onchange="saveConfig()">
             <option value="both">手机和电脑都播放</option>
             <option value="phone">仅手机播放</option>
-            <option value="pc">仅电脑播放（手机静音）</option>
+            <option value="pc">仅电脑播放</option>
           </select>
         </div>
       </div>
@@ -1160,6 +1136,11 @@ async function checkStatus() {
   const offline = s.offline || [];      // 掉线但 adb 还挂着
   config = s.config || {};
   quickMap = config.quick_launch || {};
+  // 手机传回新图标后图标库版本会变：这里重画列表，界面自己就换上新的图标了
+  if (syncIconRev(s.icon_rev)) {
+    filterApps();
+    renderQuick();
+  }
   renderUnlockSettings(devices);         // 设置页：按设备列密码输入框（保存 / 清除）
   const verEl = document.getElementById('appVersion');
   if (verEl && s.version) verEl.textContent = 'v' + s.version;
@@ -1247,8 +1228,6 @@ function fillConfigInputs() {
   setVal('scale', config.scale);
   setVal('fps', config.fps);
   setVal('max_size', config.max_size);
-  setVal('icon_tool_package', config.icon_tool_package);
-  setVal('icon_import_dir', config.icon_import_dir);
   const am = document.getElementById('audio_mode');
   if (am && document.activeElement !== am && config.audio_mode) am.value = config.audio_mode;
   const vc = document.getElementById('video_codec');
@@ -1712,15 +1691,15 @@ function iconImgError(img) {
   img.dataset.retry = n;
   setTimeout(function () {
     if (!img.isConnected) return;
-    img.src = '/api/icon?pkg=' + encodeURIComponent(img.dataset.pkg) + '&t=' + Date.now();
+    img.src = '/api/icon?pkg=' + encodeURIComponent(img.dataset.pkg)
+              + iconQuery() + '&t=' + Date.now();
   }, delays[n - 1]);
 }
 
 function makeAppItem(app, nameHtml, isQuick = false) {
   const div = document.createElement('div');
   div.className = 'app-item';
-  const iconUrl = '/api/icon?pkg=' + encodeURIComponent(app.package)
-                  + (iconStamp ? '&t=' + iconStamp : '');
+  const iconUrl = '/api/icon?pkg=' + encodeURIComponent(app.package) + iconQuery();
   div.innerHTML = `
     <button class="app-add" data-pkg="${escapeHtml(app.package)}"></button>
     <div class="app-icon">
@@ -2167,52 +2146,22 @@ async function saveUnlockPin(serial, el, btn) {
     : '已清除该设备的锁屏密码：不再提供解锁', 9000);
 }
 
-/* ---------- 图标：在手机上打开取图工具 / 把导出的图标收回来 ---------- */
-// 导入的图标写进可写图标库，查找顺序上优先于随包内置的素材库；导入完给图标地址加个
-// 时间戳后缀，逼浏览器重新取图，不用重启应用。
-let iconStamp = 0;
+/* ---------- 图标 ---------- */
+// 图标由程序在设备连上之后自动从手机取回（手机侧是随包带的一个小 App，不用用户操作）。
+// 取回后图标库版本号会变，这里把版本号带在图标地址上：版本一变地址就变，浏览器自然
+// 重新取图；同一版本的图标则复用浏览器缓存，不用每次重画都重新下载一遍。
+let iconRev = -1;
 
-async function openIconTool() {
-  const d = devices.find(x => x.serial === activeDevice);
-  const btn = document.getElementById('iconToolBtn');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '正在打开…';
-  let r = null;
-  try {
-    r = await api('/api/icon/tool', 'POST',
-                  {serial: d ? d.serial : '', package: document.getElementById('icon_tool_package').value.trim()});
-  } catch (e) {}
-  btn.disabled = false;
-  btn.textContent = old;
-  if (!r) { setHint('打开取图工具失败，请重试', 9000); return; }
-  setHint(r.msg || (r.ok ? '已打开取图工具' : '打开失败'), r.ok ? 9000 : 12000);
+function iconQuery() {
+  return iconRev >= 0 ? '&r=' + iconRev : '';
 }
 
-async function importIcons() {
-  const d = devices.find(x => x.serial === activeDevice);
-  const btn = document.getElementById('iconImportBtn');
-  const hint = document.getElementById('iconHint');
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '正在导入…';
-  hint.textContent = '正在从手机拉取图标，几百张图也就几秒，请稍等…';
-  let r = null;
-  try { r = await api('/api/icon/import', 'POST', {serial: d ? d.serial : ''}); } catch (e) {}
-  btn.disabled = false;
-  btn.textContent = old;
-  if (!r) {
-    hint.textContent = '导入请求失败，请重试';
-    setHint('导入图标失败，请重试', 9000);
-    return;
-  }
-  hint.textContent = r.msg || (r.ok ? '导入完成' : '没有导入任何图标');
-  setHint(r.msg || (r.ok ? '图标已导入' : '没有导入任何图标'), r.ok ? 9000 : 12000);
-  if (r.ok) {
-    iconStamp = Date.now();      // 图标变了：让浏览器重新取图
-    renderApps(allApps);
-    renderQuick();
-  }
+// 返回「这次是真的换了一批图标」（首次拿到版本号不算：那批图第一次画本来就取的是新的）
+function syncIconRev(rev) {
+  if (typeof rev !== 'number' || rev === iconRev) return false;
+  const first = iconRev < 0;
+  iconRev = rev;
+  return !first;
 }
 
 // 开机自启动：开启时同时打开「缩小到托盘」，开机后静默驻留托盘
@@ -2241,9 +2190,7 @@ async function saveConfig() {
     fps: document.getElementById('fps').value,
     video_codec: document.getElementById('video_codec').value,
     max_size: document.getElementById('max_size').value,
-    audio_mode: document.getElementById('audio_mode').value,
-    icon_tool_package: document.getElementById('icon_tool_package').value.trim(),
-    icon_import_dir: document.getElementById('icon_import_dir').value.trim()
+    audio_mode: document.getElementById('audio_mode').value
   };
   Object.assign(config, cfg);
   await api('/api/config', 'POST', cfg);

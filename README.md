@@ -46,7 +46,8 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 
 - 应用列表扫描 + 一键启动，内置图标匹配（多级回退：精确 → 归一化 → 双向前缀/后缀 →
   末两段重合 → 剥版本后缀 → 相似度兜底 → 按应用名别名兜底），命中率高且不联网
-- **从手机导入图标**：手机上取图工具导出的图标一键收回电脑，优先于内置素材库显示
+- **从手机取图标**：设备第一次连上就把手机里真实在用的应用图标静默取回电脑（手机侧不用装任何东西、
+  也不弹界面），优先于内置素材库显示，并存下来不再重取（首页「刷新」可强制重取）
 - 托盘常驻：关闭最小化到托盘，托盘右键可直接投屏 / 启动应用
 - 开机自启动（默认关闭），启用后静默启动到托盘
 - 单实例保护（重复启动会唤起已有窗口，不会开出第二份 adb）
@@ -202,10 +203,12 @@ py -3.12 -m venv .build\venv
   「保存」（点「清除」则不再为这台手机提供解锁），之后点顶栏该设备旁边的「🔓 解锁」，
   程序会在后台点亮屏幕、静默上滑并输入密码。密码按手机的**硬件序列号**归档，
   同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁
-- **图标**：应用图标默认取自随包内置的素材库，抓不到就显示首字母。手机上的取图工具能导出
-  这台手机真实在用的图标，填上它的**包名**（点「📱 打开手机上的取图工具」会直接把它拉起来）
-  和**导出目录**，导出完点「📥 从手机导入图标」即可收回电脑。导入的图标**优先于**内置素材库，
-  文件名建议直接用包名（`com.tencent.mm.png`），用应用名也能认
+- **图标**：应用图标默认取自随包内置的素材库，抓不到就显示首字母。设备**第一次连上**程序就会在
+  后台自动从手机取一次图标（手机侧推一个 dex 上去用 `app_process` 跑一遍，不装 App、不要权限、
+  也不弹界面，全程不用你操作，设置里也没有开关）；取回的图标**优先于**内置素材库显示，并连同
+  「这台设备取过了」一起存进数据流，之后连上、断开重连都直接用存下来的那份，不再重取——想立刻
+  重取一次，在首页点「刷新」。万一取图失败（比如手机上装了拦 `app_process` 的安全软件），这一步
+  会跳过，图标继续用内置素材库，原因记在扫描日志里
 
 #### 画面与声音
 
@@ -213,7 +216,7 @@ py -3.12 -m venv .build\venv
 | --- | --- | --- |
 | 画面 | 最大帧率、码率 (Mbps)、视频编码、最大尺寸 | 对「镜像应用」和「镜像桌面」**都生效**；最大尺寸填 0 表示原始分辨率；编码可选 自动 / H.264（兼容性最好）/ H.265（同画质更省带宽） |
 | 虚拟屏（仅「镜像应用」） | 宽、高、UI 放大倍数、分辨率预设 | 启动快捷启动里的应用时按这个分辨率新开虚拟屏，**不影响手机本身的设置**；「镜像桌面」显示的是手机真实画面，与此无关。UI 放大倍数填 1.0 时与电脑 DPI 一致 |
-| 声音 | 声音输出 | 可选「手机和电脑都播放」/「仅手机播放」/「仅电脑播放（手机静音）」 |
+| 声音 | 声音输出 | 可选「手机和电脑都播放」/「仅手机播放」/「仅电脑播放」。选「仅电脑播放」时，投屏期间会把手机媒体音量调到最大（scrcpy 抓的就是手机输出的那路声音，音量压着电脑这边就没声），**关掉投屏窗口后自动还原**成原来的音量 |
 
 分辨率预设可以「保存当前」把当前宽高存成一套预设，之后从下拉里选，或「删除所选」删掉。
 
@@ -310,13 +313,13 @@ py -3.12 -m venv .build\venv
 ## 打包
 
 ```powershell
-.build\venv\Scripts\python.exe -m pip install pyinstaller
 .build\venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --noconsole `
   --icon appicon.ico --name 快投 `
   --hidden-import pystray._win32 `
   --hidden-import qrcode --hidden-import qrcode.image.svg `
   --add-data "index.html;." --add-data "config.json;." --add-data "appicon.ico;." `
   --add-data "icons;icons" --add-data "scrcpy;scrcpy" `
+  --add-data "android/icondump.dex;android" `
   launcher_server.py
 ```
 
@@ -324,6 +327,44 @@ py -3.12 -m venv .build\venv
 
 ```powershell
 .build\venv\Scripts\python.exe -m PyInstaller --noconfirm --clean KuaitouBuild.spec
+```
+
+### 手机侧取图程序（dex）
+
+`android/icondump.dex` 随包分发，源码在 `android/icondump/`。它只做一件事：把手机里每个
+能启动的应用的图标渲染成 PNG，打成一个 zip 放在 `/data/local/tmp/`，电脑再拉回来入库。
+
+跑法是 **dex + `app_process`**，不往手机装 App、不申请任何权限：
+
+```powershell
+adb push android/icondump.dex /data/local/tmp/kuaitou_icondump.dex
+adb shell CLASSPATH=/data/local/tmp/kuaitou_icondump.dex app_process /system/bin `
+  com.kuaitou.icondump.IconDump /data/local/tmp/kuaitou_icons.zip
+```
+
+进程以 shell 身份运行（uid 2000），`/data/app` 下的 base.apk 对它可读，所以能直接解出
+别的应用的图标资源。全程没有界面，也不会像装 App 那样在手机上留下东西——导出和拉取都完事
+后电脑会把推上去的 dex 和 zip 删掉。
+
+有个坑记一下：`app_process` 里起不了正常的应用上下文（`ActivityThread.systemMain()` 在部分
+ROM 上会被直接杀掉），所以取图标是走 `ServiceManager` 拿 package 服务、全程反射拼
+`AssetManager` + `Resources` 来解资源；`getInstalledPackages` 返回的又是 `ParceledListSlice`
+而不是 `List`，少调一次 `getList()` 会抛 `ClassCastException`，而它会被转成 SIGKILL，看起来
+就像「被 ROM 拦了」。细节都写在 `IconDump.java` 的注释里。
+
+改了源码后用 `android/build.ps1` 重新打包。它不走 Gradle（这个程序没有资源文件、没有第三方
+依赖），直接 javac → d8 两步出产物：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File android\build.ps1
+```
+
+需要 JDK 17 与 Android SDK 的 build-tools 35.0.1、platform android-35，放成这样即可：
+
+```
+.build/toolchain/jdk-17.0.20.1+1
+.build/toolchain/sdk/build-tools/35.0.1
+.build/toolchain/sdk/platforms/android-35/android.jar
 ```
 
 ## 项目结构
@@ -345,6 +386,7 @@ KuaitouBuild.spec         PyInstaller 打包配置
 start_web.vbs             源码态启动脚本
 scrcpy/                   随附的 scrcpy / adb 运行时（第三方，见声明）
 icons/                    应用图标库（未入库）
+android/                  手机侧取图程序的源码与打包脚本（icondump.dex 随包分发）
 tests/                    pytest 测试（图标匹配 / 配置合并 / adb 解析等纯逻辑）
 scripts/fetch_icons.py    图标素材库维护脚本（补图 + 瘦身）
 pyproject.toml            ruff 与 pytest 配置

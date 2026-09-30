@@ -386,16 +386,249 @@ def _video_args(cfg):
         args.append("--max-size=%d" % max_size)
     return args
 
+_VOLUME_STREAM = "3"        # STREAM_MUSIC：投屏抓的就是这一路
+_VOLUME_STEP_KEYS = 30      # 一轮最多按这么多次，按不动就收手
+_VOLUME_SETTLE = 0.4        # 按完等一下再读：音频服务记下新值有一点点延迟
+# 投屏起来后复查音量的时间点（秒，相对投屏启动）。真机实测：镜像一开，音频通路切换，
+# ROM 会把媒体音量按「输出设备的记忆值」拉回去（70 → 40 都见过），所以不能只拉一次。
+_BOOST_RECHECKS = (3.0, 5.0, 7.0)
+
+def _parse_volume(out):
+    """从 `volume is 7 in range [0..15]` 里抠出 (当前值, 上限)。
+
+    必须认这句而不是"把输出里的数字都抓出来"：`cmd media_session` 会先回显
+    `[V] will control stream=3 (STREAM_MUSIC)`，里面的 3 会被误当成音量。
+    """
+    m = re.search(r"volume is (\d+)\s+in range \[(\d+)\.\.(\d+)\]", out or "")
+    if m:
+        return int(m.group(1)), int(m.group(3))
+    m = re.match(r"\s*(\d+)\s*$", out or "")
+    return (int(m.group(1)), -1) if m else (-1, -1)
+
+def _parse_dumpsys_volume(out):
+    """从 `dumpsys audio` 里抠 STREAM_MUSIC 的 (当前值, 上限)。
+
+    兜底用：`cmd media_session volume --get` 在某些 ROM 上会漏报或报旧值，
+    dumpsys 里那份是音频服务自己的状态（`STREAM_MUSIC: ... Max: 150, streamVolume:75, ...`）。
+    """
+    for m in re.finditer(r"STREAM_MUSIC:(.{0,400}?)(?=STREAM_[A-Z]|$)", out or "", re.S):
+        blk = m.group(1)
+        v = re.search(r"streamVolume:(\d+)", blk)
+        if not v:
+            continue
+        top = re.search(r"Max:\s*(\d+)", blk)
+        return int(v.group(1)), (int(top.group(1)) if top else -1)
+    return -1, -1
+
+def _media_volume(serial=None):
+    """读媒体音量 → (当前值, 上限)；读不到给 (-1, -1)。
+
+    Android 16 起 `media` 这条 shell 命令已经没了（真机报 `media: inaccessible or
+    not found`），得改用 `cmd media_session`。老实现既只认前者、又按 split()[-1]
+    取尾字段（拿到的是 "[0..150]"），两个原因叠在一起，等于从来没读到过音量。
+    这里再拿 `dumpsys audio` 兜一层：读数被 ROM 漏报时，后面按音量键的逻辑不会
+    误以为「按不动了」而提前收手。
+    """
+    fallback = (-1, -1)         # 读到了值但没读到上限：先留着，后面能读到更全的就用更全的
+    for args in (["shell", "cmd", "media_session", "volume", "--stream", _VOLUME_STREAM, "--get"],
+                 ["shell", "media", "volume", "--stream", _VOLUME_STREAM, "--get"]):
+        out, _, code = run_adb(args, timeout=6, serial=serial)
+        if code == 0:
+            cur, top = _parse_volume(out)
+            if cur >= 0 and top > 0:
+                return cur, top
+            if cur >= 0 and fallback[0] < 0:
+                fallback = (cur, top)
+    out, _, code = run_adb(["shell", "dumpsys", "audio"], timeout=15, serial=serial)
+    if code == 0:
+        cur, top = _parse_dumpsys_volume(out)
+        if cur >= 0 and top > 0:
+            return cur, top
+    return fallback
+
 def get_media_volume(serial=None):
-    out, _, _ = run_adb(["shell", "media", "volume", "--stream", "3"], timeout=5, serial=serial)
-    try:
-        return int(out.strip().split()[-1])
-    except Exception:
-        return -1
+    return _media_volume(serial)[0]
+
+def _log_volume(msg):
+    """音量处理结果写进投屏日志：窗口程序没有控制台，用户报「没调到最大」时只能靠它复盘。"""
+    storage_write(LAUNCH_LOG_STREAM,
+                  "\n[volume %s] %s\n" % (time.strftime("%H:%M:%S"), msg), append=True)
+
+def _volume_after_key(key, serial, prev):
+    """按一下音量键并读回新值；读到没变或读不到就再等等重读一次。
+
+    读数滞后会让人误判成「按不动了」，从而在离目标还很远时就收手——这正是
+    「选了仅电脑播放，音量却没调上去」的常见由来，所以这里宁可多读一次。
+    """
+    run_adb(["shell", "input", "keyevent", key], timeout=6, serial=serial)
+    cur = -1
+    for _ in range(2):
+        time.sleep(_VOLUME_SETTLE)
+        cur = _media_volume(serial)[0]
+        if cur >= 0 and cur != prev:
+            return cur
+    return cur
+
+def _press_volume_to(vol, cur, serial=None):
+    """把媒体音量挪到 vol，返回是否真的到位。
+
+    一下一下按太慢：真机一次按键往返约半秒，0→150 要按十几下。改成先按一下量出步进
+    （各家 ROM 是 10 还是 15 不一样），再一口气把剩下的按完，最后读回核对；核不上就
+    按量出的步进再补一轮，不轻言放弃。
+    """
+    if cur < 0:
+        return False
+    for _ in range(3):
+        if cur == vol:
+            return True
+        key = "24" if vol > cur else "25"     # 24 = 音量加，25 = 音量减；每轮按当前值重算方向
+        before = cur
+        cur = _volume_after_key(key, serial, before)
+        step = cur - before
+        if cur < 0 or step == 0 or (step > 0) != (key == "24"):
+            return False            # 到头了，或者被 ROM / 前台的播放器顶回来了
+        step = abs(step)
+        # 向下取整：宁可最后差一格，也别按过头。原值不是步进整数倍时（真机 150 档、步进 10，
+        # 用户原值可能是 36 这种）目标本身就按不到，向上取整会直接冲过去（36 → 0 见过）。
+        need = min(abs(vol - cur) // step, _VOLUME_STEP_KEYS)
+        if need:
+            run_adb(["shell", "input", "keyevent"] + [key] * need,
+                    timeout=10 + need, serial=serial)
+        time.sleep(_VOLUME_SETTLE)
+        cur = _media_volume(serial)[0]
+    return cur == vol
 
 def set_media_volume(vol, serial=None):
-    run_adb(["shell", "media", "volume", "--stream", "3", "--set", str(vol)],
-            timeout=5, serial=serial)
+    """把媒体音量设成 vol，返回是否真的设成了。
+
+    真机实测（Android 16 / vivo）：`cmd media_session volume --set` 会在日志里留下
+    `setStreamVolume(index:...)` 却立刻被 ROM 回滚，只有音量键是真的生效。所以先试
+    命令，读回来核对；没变就退回音量键，一步步按过去。
+    """
+    try:
+        run_adb(["shell", "cmd", "media_session", "volume", "--stream", _VOLUME_STREAM,
+                 "--set", str(vol)], timeout=6, serial=serial)
+        time.sleep(0.2)
+        cur = _media_volume(serial)[0]
+        if cur == vol:
+            return True
+        ok = _press_volume_to(vol, cur, serial)
+        if not ok:
+            # 读数被 ROM 拖着不更新时，上面会误判成没到位。以最终读回值再确认一次，
+            # 免得明明拉满了还去还原。
+            ok = _media_volume(serial)[0] == vol
+        return ok
+    except Exception:
+        return False
+
+# 「仅电脑播放」时把手机音量拉满的登记表：序列号 -> 拉满之前用户自己的音量。
+# 和 _screen_off_held 一个道理，改了用户的东西就得记着还回去。
+_boosted_volume = {}
+_boosted_volume_lock = threading.Lock()
+_volume_ops = {}                # 序列号 -> 锁：拉满 / 投屏后复查 / 还原 三件事不许互相插队
+_volume_ops_lock = threading.Lock()
+
+def _volume_op_lock(key):
+    with _volume_ops_lock:
+        lk = _volume_ops.get(key)
+        if lk is None:
+            lk = _volume_ops[key] = threading.Lock()
+        return lk
+
+def boost_media_volume(serial=None):
+    """把手机媒体音量拉到最大，返回原值；不需要改（已最大 / 读不到 / 改不动）时返回 None。
+
+    真机反馈：选了「仅电脑播放」后电脑这边没声或很小。scrcpy 抓的就是手机输出的
+    那路声音，手机音量压着，抓到的信号自然也是压着的，所以要拉满；关窗口时还原。
+    """
+    key = serial or ""
+    try:
+        with _volume_op_lock(key):
+            cur, top = _media_volume(serial)
+            if cur < 0 or top <= 0:
+                _log_volume("读不到媒体音量，跳过拉满（serial=%s）" % (serial or "-"))
+                return None
+            if cur >= top:
+                _log_volume("媒体音量本来就在最大（%d/%d），不用动" % (cur, top))
+                return None
+            with _boosted_volume_lock:
+                if key in _boosted_volume:
+                    return _boosted_volume[key]   # 这台已经拉满过，别把拉满后的值当成原值记第二次
+            if not set_media_volume(top, serial):
+                got = _media_volume(serial)[0]
+                _log_volume("拉满失败：%d → %d，目标是 %d（serial=%s）"
+                            % (cur, got, top, serial or "-"))
+                return None                     # 没真拉上去就别登记，免得还原时去动用户的音量
+            with _boosted_volume_lock:
+                _boosted_volume[key] = cur
+            _log_volume("已拉满：%d → %d（关窗口后还原成 %d；serial=%s）"
+                        % (cur, top, cur, serial or "-"))
+            return cur
+    except Exception as e:
+        _log_volume("拉满出错：%r" % (e,))
+        return None
+
+def recheck_boost_volume(serial=None):
+    """投屏起来之后按 _BOOST_RECHECKS 排的时间点复查几遍：有的 ROM 会在音频通路切换时把音量拉回去。
+
+    真机实测（vivo / Android 16）：镜像一开，音频通路切到新输出，ROM 会按「输出设备的记忆值」
+    把媒体音量拉回去（70 → 40 都见过），所以只在拉起前拉一次不够，要盯着补几遍。每遍都先确认
+    「这台还在拉满名单里」才动手，免得窗口已经关了还去改用户自己的音量。跑在后台线程里，
+    调用方不用等它。
+    """
+    def run():
+        key = serial or ""
+        lock = _volume_op_lock(key)
+        started = time.time()
+        for at in _BOOST_RECHECKS:
+            time.sleep(max(0.0, at - (time.time() - started)))
+            with _boosted_volume_lock:
+                if key not in _boosted_volume:
+                    return                  # 已经还原过（窗口关了），别再往回拉
+            if not lock.acquire(blocking=False):
+                continue                    # 正有拉满 / 还原在跑，这一轮别插队
+            try:
+                with _boosted_volume_lock:
+                    if key not in _boosted_volume:
+                        return
+                cur, top = _media_volume(serial)
+                if 0 <= cur < top:
+                    if set_media_volume(top, serial):
+                        _log_volume("投屏后复查：音量被拉回到 %d，已重新拉满到 %d（serial=%s）"
+                                    % (cur, top, serial or "-"))
+                    else:
+                        _log_volume("投屏后复查：音量是 %d（未满 %d），再拉也没拉动（serial=%s）"
+                                    % (cur, top, serial or "-"))
+            except Exception:
+                pass
+            finally:
+                lock.release()
+
+    threading.Thread(target=run, daemon=True).start()
+
+def restore_media_volume(serial=None):
+    """把拉满的音量还给用户：投屏窗口关闭时调。
+
+    认的是启动时那台设备，所以 key 用 serial or ""——与「传 None 表示全部还原」区分开。
+    整段拿设备锁：不能和投屏后的复查交叉，否则复查会把还原好的音量又拉满。
+    """
+    key = serial or ""
+    with _volume_op_lock(key):
+        with _boosted_volume_lock:
+            orig = _boosted_volume.pop(key, None)
+        if orig is not None:
+            set_media_volume(orig, serial)
+            # 记下实际读回值：音量档位多半只能按步进走，原值又未必是步进的整数倍，可能差一格
+            _log_volume("已还原成 %d（实际 %d；serial=%s）" % (orig, _media_volume(serial)[0], serial or "-"))
+
+def restore_all_media_volume():
+    """全部还原：退出应用时调（关窗走的 os._exit，等着投屏线程收尾来不及）。"""
+    with _boosted_volume_lock:
+        targets = list(_boosted_volume.items())
+        _boosted_volume.clear()
+    for key, orig in targets:
+        with _volume_op_lock(key):
+            set_media_volume(orig, key or None)
 
 # ============ 锁屏解锁 / 熄屏 ============
 # 手机锁着的时候投出来的就是锁屏画面，还得在电脑上手滑一次才看得到内容。密码由用户事先
@@ -733,15 +966,14 @@ def launch_app(pkg, serial=None):
 
     cfg = load_config()
     audio_mode = cfg.get("audio_mode", "both")
-    old_vol = -1
 
     if audio_mode == "pc":
-        old_vol = get_media_volume(serial)
-        if old_vol >= 0:
-            set_media_volume(0, serial)
+        # 抓的就是手机输出那路声音：手机音量压着，电脑这边就没声 / 很小，所以先拉满
+        boost_media_volume(serial)
 
     cmd = build_scrcpy_cmd(pkg=pkg, serial=serial)
     proc = _spawn(cmd, tag="镜像应用 %s @ %s" % (pkg, serial or "-"))
+    recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
     with _mirror_lock:
         _mirror_procs[key] = proc
 
@@ -760,9 +992,7 @@ def launch_app(pkg, serial=None):
                           startupinfo=get_startupinfo(), creationflags=0x08000000)
         except Exception:
             pass
-        if old_vol >= 0:
-            time.sleep(0.5)
-            set_media_volume(old_vol, serial)
+        restore_media_volume(serial)
     threading.Thread(target=wait_and_kill, daemon=True).start()
     return proc, False
 
@@ -773,21 +1003,17 @@ def launch_desktop(serial=None):
     cmd = ([SCRCPY_PATH] + _serial_args(serial)
            + ["--stay-awake", "--window-x=600", "--window-y=50"]
            + _stream_args(cfg) + _video_args(cfg))
-    old_vol = -1
     if audio_mode == "phone":
         cmd.append("--no-audio")
     elif audio_mode == "pc":
-        old_vol = get_media_volume(serial)
-        if old_vol >= 0:
-            set_media_volume(0, serial)
+        boost_media_volume(serial)      # 同上：拉满手机音量，关窗口时还原
 
     proc = _spawn(cmd, tag="镜像桌面 @ %s" % (serial or "-"))
+    recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
     def wait_restore():
         proc.wait()
         _close_child_log(proc.pid)
-        if old_vol >= 0:
-            time.sleep(1)
-            set_media_volume(old_vol, serial)
+        restore_media_volume(serial)
     threading.Thread(target=wait_restore, daemon=True).start()
     return proc
 
@@ -936,6 +1162,8 @@ def shutdown_all():
     托盘图标由上层（system）负责收尾——托盘是界面层的东西，不该由本模块反向依赖。"""
     # 老系统关屏时顶住过「熄屏后自动锁定」，退出前必须还给用户，别把人家的设置留在我们这
     release_lock_timeout(None)
+    # 拉满的手机音量同理：关窗会直接 os._exit，等投屏线程收尾来不及，这里先还
+    restore_all_media_volume()
     cleanup_scrcpy()
     _kill_children()
     if _adb_server_ours:

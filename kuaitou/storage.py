@@ -13,7 +13,7 @@ import sys
 
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.4"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
@@ -57,6 +57,7 @@ SCAN_LOG_STREAM = "apps_scan.log"             # 应用扫描异常日志
 ERROR_LOG_STREAM = "快投_错误日志.txt"          # 启动致命错误日志
 ICON_INDEX_STREAM = "icon_index.json"         # 已缓存图标的包名索引
 ICON_STREAM_PREFIX = "icon_"                  # 图标流：icon_<包名>.webp
+ICON_SYNCED_STREAM = "icons_synced.json"      # 已经取过图标的设备（按硬件序列号），免得每次连上都重取
 UNLOCK_PINS_STREAM = "unlock_pins.json"       # 锁屏解锁密码：{设备键: 混淆串}，按手机归档（不进 config.json）
 
 _ads_ok = None                                # None=尚未探测；True/False=探测结果
@@ -173,7 +174,7 @@ def storage_location():
              "数据流可用: %s" % ("是" if _ads_usable() else "否"),
              "实际存储方式: %s" % kind]
     for stream in (CONFIG_STREAM, APPS_CACHE_STREAM, LAUNCH_LOG_STREAM,
-                   ICON_INDEX_STREAM, SCAN_LOG_STREAM, ERROR_LOG_STREAM):
+                   ICON_INDEX_STREAM, ICON_SYNCED_STREAM, SCAN_LOG_STREAM, ERROR_LOG_STREAM):
         p = ads_path(stream)
         try:
             n = os.path.getsize(p)
@@ -204,10 +205,6 @@ DEFAULT_CONFIG = {
     "recent_devices": [],       # 最近连接过的设备 [{addr, ip, port, name, ts}]，最多 5 台
     "quick_launch": {},         # {设备序列号: [包名...]}；"*" 为无专属列表时的默认值
     "minimize_to_tray": False,  # 开启后点关闭不退出，而是收进系统托盘继续待命
-    # 图标从手机取回：手机上取图工具的包名（可留空，留空就只用「从手机导入」），
-    # 以及它把图标导出到的目录；导入的图标优先于随包预置的素材库
-    "icon_tool_package": "",
-    "icon_import_dir": "/sdcard/Download/icons"
 }
 
 def load_config():

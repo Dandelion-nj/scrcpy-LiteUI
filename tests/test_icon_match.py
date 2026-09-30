@@ -4,7 +4,8 @@
 不依赖真实素材库，也不碰网络。
 """
 
-from pathlib import Path
+import time
+import zipfile
 
 import pytest
 
@@ -178,8 +179,9 @@ def test_alias_overseas_name(monkeypatch):
 
 
 # ---------- 从手机导入图标 ----------
-# 手机上取图工具导出的图标收回电脑：文件名优先当包名，其次当应用名；
-# 收回来后要排在预置素材库前面（用户原话：传回后优先用手机传回的图片）。
+# 从手机取图标：设备一连上就自动跑一遍（推 dex → 用 app_process 在手机上跑一遍 →
+# 把图标包拉回来入库）；包里的条目就是「包名.png」，包名直接当索引键。收回来后要排在
+# 预置素材库前面（用户原话：传回后优先用手机传回的图片）。全程不发真 adb 命令。
 
 def _img(p):
     """铺一个假图片文件：导入流程只看文件名与字节，内容无所谓。"""
@@ -195,97 +197,246 @@ def test_looks_like_pkg():
     assert not apps._looks_like_pkg("wechat")
 
 
-def test_ingest_icon_file_prefers_package_name(tmp_path):
-    f = _img(tmp_path / "com.tencent.mm.png")
-    assert apps._ingest_icon_file(str(f), {}) == "com.tencent.mm"
+class _FakeSyncAdb:
+    """假 adb：只认 推 dex / 跑 app_process / 拉图标包 三步，每步都做成可调状态。"""
 
-
-def test_ingest_icon_file_falls_back_to_app_name(tmp_path, monkeypatch):
-    monkeypatch.setattr(apps, "_apps_cache",
-                        {"SN": [{"name": "微信", "package": "com.tencent.mm"}]})
-    table = apps._pkg_by_app_name()
-    assert apps._ingest_icon_file(str(_img(tmp_path / "微信.png")), table) == "com.tencent.mm"
-    assert apps._ingest_icon_file(str(_img(tmp_path / "认不出来.png")), table) is None
-
-
-class _FakeImportAdb:
-    """假 adb：ls 给一份名单，pull 就地铺出同名文件。"""
-
-    def __init__(self, names, ls_out=None, pull_code=0):
-        self.names = names
-        self.ls_out = ls_out if ls_out is not None else "\n".join(names)
+    def __init__(self, names=("com.tencent.mm.png",), dump_code=0, dump_out=None,
+                 pull_code=0):
+        self.names = list(names)
+        self.dump_code = dump_code
+        self.dump_out = "[icondump] 完成：导出 1 个，跳过 0 个" if dump_out is None else dump_out
         self.pull_code = pull_code
         self.calls = []
 
     def __call__(self, args, timeout=8, serial=None):
         self.calls.append(args)
-        if args[:3] == ["shell", "ls", "-1"]:
-            return self.ls_out, "", 0
-        if args[0] == "pull":
-            for n in self.names:
-                _img(Path(args[2]) / "icons" / n)
+        if args[:1] == ["push"]:
+            return "1 file pushed.\n", "", 0
+        if args[:1] == ["pull"]:
+            if self.pull_code == 0:
+                with zipfile.ZipFile(args[2], "w") as zf:
+                    for n in self.names:
+                        zf.writestr(n, b"BAD-DATA" if "bad" in n else b"\x89PNG\r\n\x1a\n")
             return "", ("" if self.pull_code == 0 else "error: closed"), self.pull_code
+        if len(args) > 1 and args[0] == "shell" and args[1].startswith("CLASSPATH="):
+            return self.dump_out, "", self.dump_code
         return "", "", 0
 
 
-def _patch_import(monkeypatch, names, written, rebuilt, **kw):
-    adb = _FakeImportAdb(names, **kw)
+def _patch_synced(monkeypatch):
+    """把「这台设备取过图标了」的持久记录换成内存版。
+
+    否则测试会读写真入口脚本的数据流，还会为拿设备键真去跑 adb getprop。
+    """
+    state = set()
+    monkeypatch.setattr(apps, "_synced_keys", lambda: set(state))
+
+    def save(keys):
+        state.clear()
+        state.update(keys)
+
+    monkeypatch.setattr(apps, "_save_synced_keys", save)
+    monkeypatch.setattr(apps, "_sync_key", lambda serial: serial or "")
+    monkeypatch.setattr(apps, "_icon_synced", set())
+    return state
+
+
+def _patch_sync(monkeypatch, written, rebuilt, **kw):
+    adb = _FakeSyncAdb(**kw)
     monkeypatch.setattr(apps, "run_adb", adb)
-    monkeypatch.setattr(apps, "load_config", lambda: {"icon_import_dir": "/sdcard/ic"})
     monkeypatch.setattr(apps, "get_devices", lambda: ["SN-1"])
-    monkeypatch.setattr(apps, "_apps_cache",
-                        {"SN-1": [{"name": "微信", "package": "com.tencent.mm"}]})
+    # 取图 dex 只查「在不在」，随便指个真实存在的文件即可
+    monkeypatch.setattr(apps, "_ICON_DEX_FILE", apps.__file__)
     monkeypatch.setattr(apps, "_icon_bytes_to_webp",
                         lambda raw, size=256: None if raw.startswith(b"BAD") else b"w")
     monkeypatch.setattr(apps, "_write_icon",
                         lambda pkg, data: written.append(pkg) or ("/x/%s.webp" % pkg))
     monkeypatch.setattr(apps, "_icon_index_build", lambda: rebuilt.append(1))
+    _patch_synced(monkeypatch)
     return adb
 
 
-def test_import_icons_ingests_and_reports(monkeypatch):
-    """包名文件名 + 应用名文件名都能入库；认不出的、图片不合格的算跳过。"""
+def test_sync_icons_ingests_and_reports(monkeypatch):
+    """包名当索引键入库；认不出包名的条目、图片不合格的都算跳过。"""
     written, rebuilt = [], []
-    _patch_import(monkeypatch,
-                  ["com.tencent.mm.png", "微信.png", "bad.com.foo.png", "说明.txt"],
-                  written, rebuilt)
-    r = apps.import_icons_from_device("SN-1")
-    assert r["ok"] is True and r["imported"] == 2 and r["skipped"] == 1
-    assert written == ["com.tencent.mm", "com.tencent.mm"]
-    assert rebuilt == [1]                     # 入库后重建索引，导入的图标才会排到前面
-    assert "已导入 2 个图标" in r["msg"]
+    adb = _patch_sync(monkeypatch, written, rebuilt,
+                      names=["com.tencent.mm.png", "bad.com.foo.png", "说明.txt"])
+    r = apps.sync_icons_from_device("SN-1")
+    assert r["ok"] is True and r["imported"] == 1 and r["skipped"] == 2
+    assert written == ["com.tencent.mm"]
+    assert rebuilt == [1]
+    assert adb.calls[0][:1] == ["push"]          # 第一步就是把 dex 推上去
 
 
-def test_import_icons_rejects_dir_without_images(monkeypatch):
+def test_sync_icons_runs_the_dumped_dex(monkeypatch):
+    """手机上跑的是 app_process + dex：用 CLASSPATH 指到推上去的 dex，跑我们的主类。"""
     written, rebuilt = [], []
-    _patch_import(monkeypatch, ["a.txt"], written, rebuilt)
-    r = apps.import_icons_from_device("SN-1")
-    assert r["ok"] is False and "没有图片" in r["msg"]
-    assert written == [] and rebuilt == []
+    adb = _patch_sync(monkeypatch, written, rebuilt)
+    assert apps.sync_icons_from_device("SN-1")["ok"] is True
+    assert ["push", apps.__file__, apps._ICON_DEX_REMOTE] in adb.calls
+    runs = [a for a in adb.calls
+            if len(a) > 1 and a[0] == "shell" and a[1].startswith("CLASSPATH=")]
+    assert runs == [["shell", "CLASSPATH=" + apps._ICON_DEX_REMOTE, "app_process",
+                     "/system/bin", apps._ICON_DUMP_CLASS, apps._ICON_ZIP_REMOTE]]
 
 
-def test_import_icons_reports_missing_dir(monkeypatch):
+def test_sync_icons_cleans_up_the_device(monkeypatch):
+    """dex 与图标包用完就删：手机上不留任何东西（这也是换掉装 App 那条路的意义）。"""
     written, rebuilt = [], []
-    _patch_import(monkeypatch, [], written, rebuilt,
-                  ls_out="ls: /sdcard/ic: No such file or directory")
-    r = apps.import_icons_from_device("SN-1")
-    assert r["ok"] is False and "找不到" in r["msg"]
+    adb = _patch_sync(monkeypatch, written, rebuilt)
+    apps.sync_icons_from_device("SN-1")
+    assert ["shell", "rm", "-f", apps._ICON_DEX_REMOTE, apps._ICON_ZIP_REMOTE] in adb.calls
 
 
-def test_import_icons_reports_pull_failure(monkeypatch):
+def test_sync_icons_reports_dump_failure(monkeypatch):
+    """app_process 非零退出（比如被 ROM 杀掉）时如实报错，别当成功。"""
     written, rebuilt = [], []
-    _patch_import(monkeypatch, ["com.a.b.png"], written, rebuilt, pull_code=1)
-    r = apps.import_icons_from_device("SN-1")
+    _patch_sync(monkeypatch, written, rebuilt, dump_code=137, dump_out="[icondump] 失败：…")
+    r = apps.sync_icons_from_device("SN-1")
+    assert r["ok"] is False and "导出图标失败" in r["msg"]
+    assert written == []
+
+
+def test_sync_icons_reports_missing_dex(monkeypatch):
+    """打包漏了 dex 时要直说，别让用户对着「拉取失败」瞎猜。"""
+    written, rebuilt = [], []
+    adb = _patch_sync(monkeypatch, written, rebuilt)
+    monkeypatch.setattr(apps, "_ICON_DEX_FILE", "no-such-icondump.dex")
+    r = apps.sync_icons_from_device("SN-1")
+    assert r["ok"] is False and "取图程序不在" in r["msg"]
+    assert adb.calls == []
+
+
+def test_sync_icons_reports_push_failure(monkeypatch):
+    written, rebuilt = [], []
+    adb = _patch_sync(monkeypatch, written, rebuilt)
+    monkeypatch.setattr(apps, "run_adb",
+                        lambda args, timeout=8, serial=None:
+                        ("", "adb: error: failed to copy", 1)
+                        if args[:1] == ["push"] else adb(args, timeout, serial))
+    r = apps.sync_icons_from_device("SN-1")
+    assert r["ok"] is False and "推送取图程序失败" in r["msg"]
+    assert written == []
+
+
+def test_sync_icons_reports_pull_failure(monkeypatch):
+    written, rebuilt = [], []
+    _patch_sync(monkeypatch, written, rebuilt, pull_code=1)
+    r = apps.sync_icons_from_device("SN-1")
     assert r["ok"] is False and "拉取图标失败" in r["msg"]
     assert written == []
 
 
-def test_import_icons_without_device(monkeypatch):
+def test_sync_icons_without_device(monkeypatch):
     written, rebuilt = [], []
-    _patch_import(monkeypatch, [], written, rebuilt)
+    _patch_sync(monkeypatch, written, rebuilt)
     monkeypatch.setattr(apps, "get_devices", lambda: [])
-    r = apps.import_icons_from_device(None)
+    r = apps.sync_icons_from_device(None)
     assert r["ok"] is False and "没有已连接的设备" in r["msg"]
+
+
+def test_sync_icons_marks_device_in_ads(monkeypatch):
+    """取成功就把这台设备记进数据流：下次连上不必重取。"""
+    written, rebuilt = [], []
+    _patch_sync(monkeypatch, written, rebuilt)
+    assert apps.sync_icons_from_device("SN-1")["ok"] is True
+    assert apps._synced_keys() == {"SN-1"}
+
+
+def test_sync_icons_failure_keeps_device_unmarked(monkeypatch):
+    """这一轮没成（比如导出超时）就别登记，下次连上还得再试。"""
+    written, rebuilt = [], []
+    _patch_sync(monkeypatch, written, rebuilt, pull_code=1)
+    assert apps.sync_icons_from_device("SN-1")["ok"] is False
+    assert apps._synced_keys() == set()
+
+
+def test_auto_sync_runs_once_per_device(monkeypatch):
+    """状态接口每 3 秒轮询一次，不能每轮都去装一遍、拉一遍。"""
+    runs = []
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: runs.append(serial) or {"ok": True})
+    _patch_synced(monkeypatch)
+    for _ in range(5):
+        apps.auto_sync_icons("SN-1")
+    deadline = time.time() + 5
+    while len(runs) < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.1)
+    assert runs == ["SN-1"]
+
+
+def test_auto_sync_skips_device_already_taken(monkeypatch):
+    """这台之前取过（记录在数据流里，重开程序也认）：连上就直接用，不再重取。"""
+    runs = []
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: runs.append(serial) or {"ok": True})
+    state = _patch_synced(monkeypatch)
+    state.add("SN-1")
+    apps.auto_sync_icons("SN-1")
+    time.sleep(0.15)
+    assert runs == []
+
+
+def test_auto_sync_skips_after_disconnect(monkeypatch):
+    """掉线再连上不重取：图标已经在数据流里，不必因为掉了一次线再来一遍。"""
+    runs = []
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: runs.append(serial) or {"ok": True})
+    state = _patch_synced(monkeypatch)
+    state.add("SN-1")
+    apps.auto_sync_icons("SN-1")
+    time.sleep(0.15)
+    apps.forget_icon_sync("SN-1")         # 掉线
+    apps.auto_sync_icons("SN-1")          # 又连上
+    time.sleep(0.15)
+    assert runs == []
+
+
+def test_resync_icons_forgets_then_takes_again(monkeypatch):
+    """首页点「刷新」＝用户明确要求重来：抹掉记录再取一遍。"""
+    runs = []
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: runs.append(serial) or {"ok": True})
+    state = _patch_synced(monkeypatch)
+    state.add("SN-1")
+    apps.resync_icons("SN-1")
+    deadline = time.time() + 5
+    while not runs and time.time() < deadline:
+        time.sleep(0.01)
+    assert runs == ["SN-1"]
+    assert "SN-1" not in state           # 记录先抹掉，取成功后再由 sync 自己登记
+
+
+def test_resync_icons_without_device(monkeypatch):
+    monkeypatch.setattr(apps, "get_devices", lambda: [])
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: {"ok": True})
+    _patch_synced(monkeypatch)
+    apps.resync_icons(None)              # 没设备：安静收工，不炸
+    time.sleep(0.05)
+
+
+def test_auto_sync_failure_is_retried_next_time(monkeypatch):
+    """这一轮没成（比如手机没解锁）就别记成「取过了」，下次连上再试。"""
+    monkeypatch.setattr(apps, "sync_icons_from_device",
+                        lambda serial=None: {"ok": False, "msg": "手机导出超时"})
+    monkeypatch.setattr(apps, "_log_scan_failure", lambda msg: None)
+    _patch_synced(monkeypatch)
+    apps.auto_sync_icons("SN-1")
+    deadline = time.time() + 5
+    while "SN-1" in apps._icon_synced and time.time() < deadline:
+        time.sleep(0.01)
+    assert "SN-1" not in apps._icon_synced
+
+
+def test_successful_sync_bumps_icon_rev(monkeypatch):
+    """取回新图标要让图标库版本 +1，界面据此重新取图。"""
+    written, rebuilt = [], []
+    _patch_sync(monkeypatch, written, rebuilt)
+    before = apps.icon_rev()
+    assert apps.sync_icons_from_device("SN-1")["ok"] is True
+    assert apps.icon_rev() == before + 1
 
 
 def test_imported_icon_wins_over_bundled(tmp_path, monkeypatch):
@@ -300,17 +451,3 @@ def test_imported_icon_wins_over_bundled(tmp_path, monkeypatch):
     apps._icon_index_build()
     assert apps.find_cached_icon("com.foo.bar") == str(from_phone)
 
-
-def test_launch_icon_tool_needs_package(monkeypatch):
-    monkeypatch.setattr(apps, "load_config", lambda: {"icon_tool_package": ""})
-    r = apps.launch_icon_tool(serial="SN-1")
-    assert r["ok"] is False and "包名" in r["msg"]
-
-
-def test_launch_icon_tool_reports_missing_app(monkeypatch):
-    monkeypatch.setattr(apps, "load_config", lambda: {"icon_tool_package": "com.x.y"})
-    monkeypatch.setattr(apps, "run_adb",
-                        lambda args, timeout=8, serial=None:
-                        ("", "** No activities found to run, monkey aborted.", 1))
-    r = apps.launch_icon_tool(serial="SN-1")
-    assert r["ok"] is False and "没能打开" in r["msg"]

@@ -19,7 +19,7 @@ import urllib.request
 
 import webview
 
-from .apps import _app_name, import_icons_from_device, launch_icon_tool, list_apps, request_icon
+from .apps import _app_name, auto_sync_icons, forget_icon_sync, icon_rev, list_apps, request_icon, resync_icons
 from .device import (
     CLASSIC_ADB_PORT,
     _device_model,
@@ -110,6 +110,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == '/api/status':
             st = device_states()
             cfg = load_config()
+            online = list(st["device"])
+            # 设备一连上就后台取一次图标（手机侧自带的取图 App 导出 → 拉回来入库）；
+            # 断开就忘掉记录，下次再连上重新取一份。整件事不打扰界面，失败只写日志。
+            for d in online:
+                auto_sync_icons(d)
+            for d in list(st["unauthorized"]) + list(st["offline"]) + list(st["other"]):
+                forget_icon_sync(d)
             self.send_json({
                 "version": APP_VERSION,
                 # devices=可用设备；pending=手机还停在「允许调试」弹窗；offline=掉线但 adb 还挂着
@@ -120,11 +127,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                  usb=(":" not in d),
                                  locked=screen_locked(d),
                                  pin_set=bool(get_unlock_pin(d)))
-                            for d in st["device"]],
+                            for d in online],
                 "pending": [dict(device_info(d), model=None, usb=(":" not in d))
                             for d in st["unauthorized"]],
                 "offline": [dict(device_info(d), model=None, usb=(":" not in d))
                             for d in (st["offline"] + st["other"])],
+                # 图标库版本：手机传回新图标后会 +1，界面据此让浏览器重新取图
+                "icon_rev": icon_rev(),
                 "config": cfg,
             })
 
@@ -133,6 +142,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             force = qs.get('force', ['0'])[0] == '1'
             serial = qs.get('device', [''])[0]
             apps = list_apps(serial, force=force)
+            if force and serial:
+                # 用户点了「刷新」＝明确要求重来一次：顺带把手机上的图标重新取一份
+                # （平时图标只在设备第一次连上时取，之后一直用存下来的）。后台跑，
+                # 取回后图标库版本会变，界面据此自己换图。
+                resync_icons(serial)
             self.send_json({"apps": apps, "device": serial})
 
         elif path == '/api/discover':
@@ -294,15 +308,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "no serial"}, 400)
                 return
             self.send_json(screen_off(serial))
-
-        elif path == '/api/icon/tool':
-            # 在手机上打开取图工具，用户在手机上导出图标后再点「从手机导入图标」
-            self.send_json(launch_icon_tool(package=body.get('package', ''),
-                                            serial=body.get('serial', '') or None))
-
-        elif path == '/api/icon/import':
-            # 把手机上导出的图标收回来入库（入库后优先于随包预置的素材库）
-            self.send_json(import_icons_from_device(serial=body.get('serial', '') or None))
 
         elif path == '/api/config':
             save_config(body)

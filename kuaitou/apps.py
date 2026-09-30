@@ -19,9 +19,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from difflib import SequenceMatcher, get_close_matches
 
-from .device import _serial_args, get_devices, get_startupinfo, run_adb
+from .device import _serial_args, device_key, get_devices, get_startupinfo, run_adb
 from .storage import (
     APPS_CACHE_STREAM,
     ICON_DIR,
@@ -29,12 +30,13 @@ from .storage import (
     ICON_INDEX_STREAM,
     ICON_SEARCH_DIRS,
     ICON_STREAM_PREFIX,
+    ICON_SYNCED_STREAM,
+    RES_DIR,
     SCAN_LOG_STREAM,
     SCRCPY_PATH,
     _ads_usable,
     _write_text,
     ads_path,
-    load_config,
     storage_read,
     storage_write,
 )
@@ -857,107 +859,249 @@ def list_apps(serial, force=False):
 _icon_index_build()
 _load_apps_cache()
 
-# ============ 从手机导入图标 ============
-# 手机上的取图工具把图标导出成一个目录（文件名是包名最省事，是应用名也能认），这里把整个
-# 目录拉回来，转成 webp 写进可写图标库。导入的图标在查找顺序上排在预置素材库前面：手机传
-# 回来的是这台设备上真实在用的那张图，比我们预置的通用图准；没导入时自然还是用预置的。
-_ICON_PULL_TIMEOUT = 300        # 拉几百个图标走 USB 也就几秒，无线慢些，耐心给足
+# ============ 从手机取图标 ============
+# 手机侧跑的是我们自己编的一个 dex（android/icondump.dex）：用 app_process 直接把它跑
+# 起来，不装 App、不要权限，手机上不留任何东西。它遍历手机上所有能启动的应用，把图标
+# 渲染成 PNG 打成一个 zip，我们再拉回来入库。
+#
+# 之前是往手机装一个 APK 去导（还得用前台服务防冻结、等 done.txt 标记、拉整个目录），
+# 现在整条链路只剩 推 dex → 跑一次 → 拉 zip 三步，也不用再往手机上装东西。
+#
+# 电脑这边全程自动：设备第一次连上就导一次，之后一直用存下来的那份，不再重取
+# （想重取就在首页点「刷新」）。收进来的图标在查找顺序上排在预置素材库前面：
+# 手机传回的是这台设备上真实在用的那张图，比我们预置的通用图准；没取到时自然还是用预置的。
+_ICON_DEX_FILE = os.path.join(RES_DIR, "android", "icondump.dex")
+_ICON_DEX_REMOTE = "/data/local/tmp/kuaitou_icondump.dex"
+_ICON_ZIP_REMOTE = "/data/local/tmp/kuaitou_icons.zip"
+_ICON_DUMP_CLASS = "com.kuaitou.icondump.IconDump"
+_ICON_DUMP_TIMEOUT = 180        # 导一百多个图标三四秒就完了，无线慢些，余量给足
+_ICON_PULL_TIMEOUT = 300        # 拉压缩包走 USB 一两秒，无线慢些，耐心给足
+
+_icon_rev = 0                   # 图标库版本号：手机传回新图标就 +1，界面据此重新取图
+_icon_rev_lock = threading.Lock()
+_icon_synced = set()            # 本次运行已经取过图标的设备（进程内去重）
+_icon_sync_lock = threading.Lock()
+_synced_keys_lock = threading.Lock()
+_synced_cache = None            # 「取过图标的设备」表的内存副本，None=还没读过
+
+def icon_rev():
+    with _icon_rev_lock:
+        return _icon_rev
+
+def _bump_icon_rev():
+    global _icon_rev
+    with _icon_rev_lock:
+        _icon_rev += 1
 
 def _looks_like_pkg(name):
     return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+', name or ""))
 
-def _pkg_by_app_name():
-    """已扫到的应用「归一化名 → 包名」：图标文件名可能是「微信.png」这种。"""
-    table = {}
-    with _apps_lock:
-        for apps in (_apps_cache or {}).values():
-            for a in apps:
-                nk = _norm_app_name(a.get("name") or "")
-                if nk:
-                    table.setdefault(nk, a.get("package"))
-    return table
+def _dump_icons_on_device(serial):
+    """推 dex 上去跑一遍，让手机把图标导成 zip。返回 (是否成功, 说明或错误)。
 
-def _ingest_icon_file(path, name_table):
-    """一个图标文件算出它的包名；认不出来返回 None。文件名优先当包名，其次当应用名。"""
-    stem = os.path.splitext(os.path.basename(path))[0]
-    if _looks_like_pkg(stem):
-        return stem
-    return name_table.get(_norm_app_name(stem))
-
-def import_icons_from_device(serial=None, remote_dir=None):
-    """把手机上 remote_dir 里的图标收回来入库，返回 {ok, msg, imported, skipped}。
-
-    只认图片后缀；拉回临时目录、转完 webp 就删掉，磁盘上不留下这些中间文件。
-    入库后重建图标索引，导入的图标因此优先于随包预置的素材库。
+    app_process 是同步跑完才返回的，所以不用再靠 done.txt 之类的标记去轮询进度；
+    它非零退出（比如被 ROM 杀掉）就是真失败了，把手机侧打印的信息原样带回去。
     """
-    cfg = load_config()
-    remote_dir = (remote_dir or cfg.get("icon_import_dir") or "").strip()
-    if not remote_dir:
-        return {"ok": False, "msg": "还没填手机上的图标目录：先到设置里填上"}
-    if not serial:
-        devs = get_devices()
-        serial = devs[0] if devs else None
-    if not serial:
-        return {"ok": False, "msg": "没有已连接的设备"}
-    out, err, code = run_adb(["shell", "ls", "-1", remote_dir], timeout=30, serial=serial)
-    text = out + err
-    if code != 0 or "No such" in text:
-        return {"ok": False, "msg": "手机上找不到 %s：确认取图工具导出到哪个目录" % remote_dir}
-    images = [n.strip() for n in out.splitlines()
-              if os.path.splitext(n.strip())[1].lower() in ICON_EXTS]
-    if not images:
-        return {"ok": False, "msg": "%s 里没有图片：先在手机上把图标导出到这个目录" % remote_dir}
+    if not os.path.exists(_ICON_DEX_FILE):
+        return False, "取图程序不在：%s 找不到" % _ICON_DEX_FILE
+    out, err, code = run_adb(["push", _ICON_DEX_FILE, _ICON_DEX_REMOTE],
+                             timeout=60, serial=serial)
+    if code != 0:
+        return False, "推送取图程序失败：%s" % (((out or "") + (err or "")).strip() or "adb push 出错")
+    run_adb(["shell", "rm", "-f", _ICON_ZIP_REMOTE], timeout=15, serial=serial)
+    out, err, code = run_adb(
+        ["shell", "CLASSPATH=" + _ICON_DEX_REMOTE, "app_process", "/system/bin",
+         _ICON_DUMP_CLASS, _ICON_ZIP_REMOTE],
+        timeout=_ICON_DUMP_TIMEOUT, serial=serial)
+    text = ((out or "") + (err or "")).strip()
+    if code != 0:
+        return False, "手机导出图标失败：%s" % (text or "app_process 退出码 %s" % code)
+    return True, text
+
+def _pull_and_ingest(serial):
+    """把手机上的图标包拉回来入库，入库后重建索引让它们排到预置素材库前面。
+
+    包里的条目就是「包名.png」，包名直接就是索引键，不用再猜文件名。
+    """
     tmp = tempfile.mkdtemp(prefix="kuaitou_icons_")
+    zip_path = os.path.join(tmp, "icons.zip")
     imported, skipped = 0, 0
     try:
-        _, perr, pcode = run_adb(["pull", remote_dir, tmp],
+        _, perr, pcode = run_adb(["pull", _ICON_ZIP_REMOTE, zip_path],
                                  timeout=_ICON_PULL_TIMEOUT, serial=serial)
         if pcode != 0:
             return {"ok": False, "msg": "拉取图标失败：%s" % ((perr or "").strip() or "adb pull 出错")}
-        name_table = _pkg_by_app_name()
-        for root, _dirs, files in os.walk(tmp):
-            for fn in files:
-                if os.path.splitext(fn)[1].lower() not in ICON_EXTS:
-                    continue
-                full = os.path.join(root, fn)
-                pkg = _ingest_icon_file(full, name_table)
-                if not pkg:
+        try:
+            zf = zipfile.ZipFile(zip_path)
+        except Exception as e:
+            return {"ok": False, "msg": "图标包读不出来：%r" % (e,)}
+        with zf:
+            for item in zf.namelist():
+                pkg = os.path.splitext(os.path.basename(item))[0]
+                if not _looks_like_pkg(pkg):
                     skipped += 1
                     continue
                 try:
-                    with open(full, "rb") as f:
-                        webp = _icon_bytes_to_webp(f.read())
+                    raw = zf.read(item)
                 except Exception:
-                    webp = None
+                    skipped += 1
+                    continue
+                webp = _icon_bytes_to_webp(raw)
                 if not webp or not _write_icon(pkg, webp):
                     skipped += 1
                     continue
                 imported += 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    if imported:
-        _icon_index_build()          # 重建索引：导入的图标要排在预置素材库前面
-        msg = "已导入 %d 个图标，应用列表会优先用它们" % imported
-        if skipped:
-            msg += "；%d 个跳过（认不出包名或图片不合格）" % skipped
-        return {"ok": True, "msg": msg, "imported": imported, "skipped": skipped}
-    return {"ok": False, "imported": 0, "skipped": skipped,
-            "msg": "没能导入：%d 个文件都认不出包名或图片不合格（文件名建议直接用包名）" % skipped}
+    if not imported:
+        return {"ok": False, "imported": 0, "skipped": skipped,
+                "msg": "手机传回来 %d 个图标，但没有一个能用" % skipped}
+    _icon_index_build()
+    _bump_icon_rev()
+    msg = "已从手机取回 %d 个图标，应用列表优先用它们" % imported
+    if skipped:
+        msg += "；%d 个跳过（图片不合格）" % skipped
+    return {"ok": True, "msg": msg, "imported": imported, "skipped": skipped}
 
-def launch_icon_tool(package=None, serial=None):
-    """在手机上打开取图工具（monkey 拉起它的启动页），返回 {ok, msg}。"""
-    pkg = (package or load_config().get("icon_tool_package") or "").strip()
-    if not pkg:
-        return {"ok": False, "msg": "还没填取图工具的包名：先到设置里填上再点这个按钮"}
+def sync_icons_from_device(serial=None):
+    """完整走一遍：推 dex → 手机上导一遍 → 拉回来入库。
+
+    返回 {ok, msg, imported, skipped}，供界面或日志显示；任何一步失败都如实返回原因。
+    """
     if not serial:
         devs = get_devices()
         serial = devs[0] if devs else None
     if not serial:
         return {"ok": False, "msg": "没有已连接的设备"}
-    out, err, code = run_adb(["shell", "monkey", "-p", pkg, "-c",
-                              "android.intent.category.LAUNCHER", "1"],
-                             timeout=30, serial=serial)
-    text = out + err
-    if code != 0 or "No activities found" in text or "aborted" in text.lower():
-        return {"ok": False, "msg": "没能打开 %s：确认这台手机上装了这个应用" % pkg}
-    return {"ok": True, "msg": "已在手机上打开取图工具：导出图标后，回来点「从手机导入图标」"}
+    ok, why = _dump_icons_on_device(serial)
+    if not ok:
+        return {"ok": False, "msg": why}
+    r = _pull_and_ingest(serial)
+    run_adb(["shell", "rm", "-f", _ICON_DEX_REMOTE, _ICON_ZIP_REMOTE],
+            timeout=15, serial=serial)
+    if r.get("ok"):
+        _mark_synced(serial)        # 记在 EXE 数据流里：下次连上就直接用这份，不再重取
+    return r
+
+# ---------- 「这台设备取过图标了」的持久记录 ----------
+# 图标抓到后会存进 EXE 数据流（icon_<包名>.webp + icon_index.json），是持久化的，所以
+# 没必要每次连上都重取一遍（手机上装装卸卸的应用不会天天变）。这里按硬件序列号登记，
+# USB 与无线接的是同一台手机，共用一份记录。想立刻重取：首页点「刷新」。
+
+def _synced_keys():
+    """读「已经取过图标的设备」表。进程内缓存一份：界面每 3 秒轮询一次状态，
+    每次都去读数据流太亏。"""
+    global _synced_cache
+    if _synced_cache is None:
+        keys = set()
+        raw = storage_read(ICON_SYNCED_STREAM)
+        if raw:
+            try:
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    keys = {k for k in data if isinstance(k, str) and k}
+            except Exception:
+                keys = set()
+        _synced_cache = keys
+    return set(_synced_cache)
+
+def _save_synced_keys(keys):
+    global _synced_cache
+    _synced_cache = set(keys)
+    storage_write(ICON_SYNCED_STREAM, json.dumps(sorted(keys), ensure_ascii=False))
+
+def _sync_key(serial):
+    """设备身份键：优先硬件序列号，取不到就退回 adb 序列号。"""
+    try:
+        return device_key(serial) or (serial or "")
+    except Exception:
+        return serial or ""
+
+def _mark_synced(serial):
+    key = _sync_key(serial)
+    if not key:
+        return
+    with _synced_keys_lock:
+        keys = _synced_keys()
+        if key in keys:
+            return
+        keys.add(key)
+        _save_synced_keys(keys)
+
+def _unmark_synced(serial):
+    key = _sync_key(serial)
+    if not key:
+        return
+    with _synced_keys_lock:
+        keys = _synced_keys()
+        if key not in keys:
+            return
+        keys.discard(key)
+        _save_synced_keys(keys)
+
+def _synced_before(serial):
+    """这台设备之前取过图标没有（持久记录，程序重启也认）。"""
+    try:
+        key = _sync_key(serial)
+    except Exception:
+        return False
+    return bool(key) and key in _synced_keys()
+
+def auto_sync_icons(serial):
+    """设备连上之后自动取一次图标（每台设备只取一次，之后一直用存下来的那份）。
+
+    整个过程在后台线程里做，界面不等它；失败也不弹提示——图标没取到就继续用预置素材库，
+    原因只写进扫描日志，免得连接设备时被一堆弹窗打扰。
+    """
+    if not serial:
+        return
+    if _synced_before(serial):      # 这台之前取过，图标已经躺在数据流里了
+        return
+    with _icon_sync_lock:
+        if serial in _icon_synced:
+            return
+        _icon_synced.add(serial)
+
+    def run():
+        try:
+            r = sync_icons_from_device(serial)
+        except Exception as e:
+            r = {"ok": False, "msg": "取图标出错：%r" % (e,)}
+        if not r.get("ok"):
+            _log_scan_failure("icon sync %s: %s" % (serial, r.get("msg")))
+            with _icon_sync_lock:
+                _icon_synced.discard(serial)    # 这次没成，下次连上再试一遍
+
+    threading.Thread(target=run, daemon=True).start()
+
+def resync_icons(serial=None):
+    """用户手动要求重取图标（首页「刷新」）：抹掉记录再走一遍，仍在后台跑。
+
+    取回新图标会 bump 图标库版本，界面据此自动换图，不用用户再做什么。
+    """
+    if not serial:
+        devs = get_devices()
+        serial = devs[0] if devs else None
+    if not serial:
+        return
+    forget_icon_sync(serial)
+    _unmark_synced(serial)
+
+    def run():
+        try:
+            r = sync_icons_from_device(serial)
+        except Exception as e:
+            r = {"ok": False, "msg": "取图标出错：%r" % (e,)}
+        if not r.get("ok"):
+            _log_scan_failure("icon resync %s: %s" % (serial, r.get("msg")))
+
+    threading.Thread(target=run, daemon=True).start()
+
+def forget_icon_sync(serial):
+    """设备断开就忘掉进程内的「取过了」：下次连上重新核对一遍持久记录。
+
+    持久记录本身不动——图标已经在数据流里，不必因为一次掉线就重取。
+    """
+    with _icon_sync_lock:
+        _icon_synced.discard(serial)
+
