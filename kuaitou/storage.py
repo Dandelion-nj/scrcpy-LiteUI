@@ -13,7 +13,7 @@ import sys
 
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.2"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
@@ -57,6 +57,7 @@ SCAN_LOG_STREAM = "apps_scan.log"             # 应用扫描异常日志
 ERROR_LOG_STREAM = "快投_错误日志.txt"          # 启动致命错误日志
 ICON_INDEX_STREAM = "icon_index.json"         # 已缓存图标的包名索引
 ICON_STREAM_PREFIX = "icon_"                  # 图标流：icon_<包名>.webp
+UNLOCK_PINS_STREAM = "unlock_pins.json"       # 锁屏解锁密码：{设备键: 混淆串}，按手机归档（不进 config.json）
 
 _ads_ok = None                                # None=尚未探测；True/False=探测结果
 
@@ -138,6 +139,15 @@ def storage_read(stream, binary=False):
         except Exception:
             continue
     return None
+
+def storage_delete(stream):
+    """删掉一个流（数据流与回退文件都试一遍）。用于「清空某项配置」：文件不存在就当删过了。"""
+    cands = ([ads_path(stream)] if _ads_usable() else []) + [os.path.join(DATA_DIR, stream)]
+    for p in cands:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 def storage_open_append(stream, binary=False):
     """以追加方式打开一个长期持有的句柄（供子进程 stdout 重定向）。失败返回 None。"""

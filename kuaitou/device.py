@@ -8,7 +8,9 @@ adb / scrcpy 调用封装、设备连接状态三态判定（device / unauthoriz
 """
 
 
+import base64
 import ctypes
+import json
 import os
 import re
 import socket
@@ -21,10 +23,14 @@ from .storage import (
     ADB_PATH,
     LAUNCH_LOG_STREAM,
     SCRCPY_PATH,
+    UNLOCK_PINS_STREAM,
     _read_log_tail,
     load_config,
     save_config,
+    storage_delete,
     storage_open_append,
+    storage_read,
+    storage_write,
 )
 
 
@@ -390,6 +396,163 @@ def get_media_volume(serial=None):
 def set_media_volume(vol, serial=None):
     run_adb(["shell", "media", "volume", "--stream", "3", "--set", str(vol)],
             timeout=5, serial=serial)
+
+# ============ 锁屏解锁 ============
+# 手机锁着的时候投出来的就是锁屏画面，还得在电脑上手滑一次才看得到内容。密码由用户事先
+# 在设置里按手机填好，存在 EXE 数据流里而不是 config.json——配置文件是会被随手发出去的
+# 东西，不该带密码。主页按设备显示当前锁屏状态并提供「解锁」按钮：点了才在后台静默
+# 上滑 + 输密码，投屏 / 启动应用本身不再自动动手机。
+# 只支持数字 PIN / 字母数字密码：图案锁没法用 input 模拟，指纹/人脸更不行，那两种情况下
+# 用户仍会看到锁屏，与没有此功能时一致。
+_UNLOCK_XOR = b"kuaitou"        # 只求密码别明文躺在数据流里，不是加密，也不假装是
+_UNLOCK_SETTLE = 0.8            # 上滑动画 / 输入法弹出的等待时间
+_UNLOCK_HINTS = ("mDreamingLockscreen", "mShowingLockscreen")
+_DEFAULT_SCREEN = (1080, 2400)  # 取不到 wm size 时的兜底分辨率，够 swipe 用
+_LOCK_CACHE_TTL = 5.0           # 锁屏状态缓存秒数：界面 3 秒一轮询，dumpsys window 输出很大
+_UNLOCK_VERIFY_ROUNDS = 5       # 解锁后复查锁屏标志的轮数
+_UNLOCK_VERIFY_WAIT = 0.8       # 每轮复查的间隔：vivo 等 ROM 的标志翻转会晚一拍
+
+def _pin_scramble(raw):
+    return bytes(b ^ _UNLOCK_XOR[i % len(_UNLOCK_XOR)] for i, b in enumerate(raw))
+
+def _pins_map():
+    """读回 {设备键: 密码}。没设置过或数据损坏都返回空表。"""
+    raw = storage_read(UNLOCK_PINS_STREAM)
+    if not raw:
+        return {}
+    try:
+        saved = json.loads(raw)
+    except Exception:
+        return {}
+    if not isinstance(saved, dict):
+        return {}
+    pins = {}
+    for key, blob in saved.items():
+        if not isinstance(blob, str):
+            continue
+        try:
+            pins[key] = _pin_scramble(base64.b64decode(blob.strip())).decode("utf-8", "replace")
+        except Exception:
+            continue
+    return pins
+
+def _save_pins_map(pins):
+    """整表回写；一台设备都没有密码时把数据流删掉，不留空壳。"""
+    if not pins:
+        storage_delete(UNLOCK_PINS_STREAM)
+        return True
+    data = {k: base64.b64encode(_pin_scramble(v.encode("utf-8"))).decode("ascii")
+            for k, v in pins.items()}
+    return bool(storage_write(UNLOCK_PINS_STREAM, json.dumps(data, ensure_ascii=False))[0])
+
+_device_key_lock = threading.Lock()
+_device_key_cache = {}          # adb 序列号 -> 身份键，免去每次轮询都跑一次 adb
+
+def device_key(serial=None):
+    """设备的稳定身份键：优先手机硬件序列号 ro.serialno。
+
+    同一台手机 USB 与无线的 adb 序列号不同（V2324A / 172.19.163.3:5555），用硬件序列号
+    做键，两种接法才能共用同一份锁屏密码。取不到时退回 adb 传输序列号。
+    """
+    cache_key = serial or ""
+    with _device_key_lock:
+        if cache_key in _device_key_cache:
+            return _device_key_cache[cache_key]
+    out, _, code = run_adb(["shell", "getprop", "ro.serialno"], timeout=8, serial=serial)
+    sn = (out.strip().splitlines() or [""])[0].strip()
+    key = sn if (code == 0 and sn) else cache_key
+    with _device_key_lock:
+        _device_key_cache[cache_key] = key
+    return key
+
+def get_unlock_pin(serial=None):
+    """取这台设备已保存的解锁密码；没设过或数据损坏都返回空串（= 不启用解锁）。"""
+    key = device_key(serial)
+    return _pins_map().get(key, "") if key else ""
+
+def set_unlock_pin(serial, pin):
+    """保存某台设备的解锁密码；传空串只关掉这台设备，其它设备的密码保留。"""
+    key = device_key(serial)
+    if not key:
+        return False
+    pins = _pins_map()
+    pin = (pin or "").strip()
+    if pin:
+        pins[key] = pin
+    else:
+        pins.pop(key, None)
+    return _save_pins_map(pins)
+
+_lock_cache_lock = threading.Lock()
+_lock_cache = {}                # adb 序列号 -> (时间戳, 是否锁屏)
+
+def screen_locked(serial=None, force=False):
+    """按 dumpsys window 里的锁屏标志判断屏幕是否锁着。取不到标志时一律当作未锁。
+
+    ROM 差异（标志名不存在）和命令失败都归到这条路径：宁可不解锁，也不能在不确定
+    的状态下往手机上乱敲密码——那可能把密码打进某个聊天窗口里。
+    结果按设备缓存几秒：dumpsys window 输出很大，而界面每 3 秒就轮询一次状态。
+    force=True 跳过缓存，用于解锁后立刻复查。
+    """
+    cache_key = serial or ""
+    now = time.time()
+    with _lock_cache_lock:
+        hit = _lock_cache.get(cache_key)
+        if hit and not force and now - hit[0] < _LOCK_CACHE_TTL:
+            return hit[1]
+    out, _, code = run_adb(["shell", "dumpsys", "window"], timeout=10, serial=serial)
+    locked = False
+    if code == 0 and out:
+        for hint in _UNLOCK_HINTS:
+            m = re.search(hint + r"=(\w+)", out)
+            if m:
+                locked = m.group(1) == "true"
+                break
+    with _lock_cache_lock:
+        _lock_cache[cache_key] = (now, locked)
+    return locked
+
+def _screen_size(serial=None):
+    out, _, _ = run_adb(["shell", "wm", "size"], timeout=8, serial=serial)
+    m = re.search(r"(\d+)x(\d+)", out or "")
+    return (int(m.group(1)), int(m.group(2))) if m else _DEFAULT_SCREEN
+
+def _swipe_and_type_pin(pin, serial=None):
+    """上滑叫出密码输入框，把密码打进去再回车。"""
+    w, h = _screen_size(serial)
+    x = w // 2
+    run_adb(["shell", "input", "swipe", str(x), str(int(h * 0.8)),
+             str(x), str(int(h * 0.25)), "200"], timeout=8, serial=serial)
+    time.sleep(_UNLOCK_SETTLE)
+    run_adb(["shell", "input", "text", pin], timeout=8, serial=serial)
+    time.sleep(0.3)
+    run_adb(["shell", "input", "keyevent", "66"], timeout=8, serial=serial)   # 66 = 回车
+    time.sleep(_UNLOCK_SETTLE)
+
+def unlock_now(serial=None):
+    """在后台静默解锁这台设备的屏幕，返回 {ok, msg} 供界面提示。
+
+    主页「解锁」按钮走这里。没设密码就不碰屏幕，只回一条说明；屏幕本来就开着只回状态。
+    解锁后复查锁屏标志：vivo 这类 ROM 的标志翻转会晚一拍，所以多给几轮复查，别把
+    「其实已经解开、只是标志还没跟上」误报成解锁失败。任何一步出错都只记结果，不抛异常。
+    """
+    try:
+        pin = get_unlock_pin(serial)
+        if not pin:
+            return {"ok": False,
+                    "msg": "这台设备还没设置锁屏密码：请到「设置 → 设备与连接 → 锁屏解锁」里填写"}
+        if not screen_locked(serial):
+            return {"ok": True, "msg": "屏幕已经是解锁状态"}
+        _swipe_and_type_pin(pin, serial)
+        for _ in range(_UNLOCK_VERIFY_ROUNDS):
+            if not screen_locked(serial, force=True):
+                return {"ok": True, "msg": "已解锁手机屏幕"}
+            time.sleep(_UNLOCK_VERIFY_WAIT)
+        return {"ok": False,
+                "msg": "已发送解锁指令，但手机仍报告锁屏：请核对密码是否与手机一致"
+                       "（图案锁 / 指纹 / 人脸无法自动解锁）"}
+    except Exception as e:
+        return {"ok": False, "msg": "解锁出错：%s" % e}
 
 # 同一台设备上的同一个应用只保留一个投屏窗口：手机端没有应用多开，重复启动要么报错
 # 要么把已有的那个顶掉。所以再次点同一个应用时不再拉起 scrcpy，直接把已有窗口唤到前台。

@@ -183,6 +183,27 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* 主页「屏幕解锁」：每台已连接设备一行，显示锁屏状态 + 一键静默解锁 */
+.lock-section { margin-bottom: 18px; }
+.lock-list { display: flex; flex-direction: column; gap: 8px; }
+.lock-item {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 9px 12px; font-size: 12px;
+}
+.lock-item .lock-name { font-weight: 600; }
+.lock-item .lock-addr {
+  flex: 1; color: var(--text-dim);
+  font-family: Consolas, ui-monospace, monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.lock-state { display: flex; align-items: center; gap: 6px; color: var(--text-dim); }
+.lock-state .lock-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
+.lock-state.locked { color: var(--warn); }
+.lock-state.locked .lock-dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.lock-state.unlocked { color: var(--green); }
+.lock-state.unlocked .lock-dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
+
 #hintText { color: var(--accent); }
 
 .section {
@@ -648,6 +669,12 @@ mark {
           </div>
         </div>
       </details>
+
+      <div class="section">
+        <div class="section-title">锁屏解锁</div>
+        <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码，之后到主页点对应设备的「解锁」按钮，就会在后台静默上滑并输入密码。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用；留空表示不启用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
+        <div id="unlockList"></div>
+      </div>
     </div>
 
     <div class="tab-pane" id="pane-screen">
@@ -774,6 +801,14 @@ mark {
 </div>
 
 <div class="main">
+  <div class="lock-section" id="lockSection" style="display:none">
+    <div class="section-head">
+      <span class="label">屏幕解锁</span>
+      <span class="count" id="lockCount"></span>
+    </div>
+    <div class="lock-list" id="lockList"></div>
+  </div>
+
   <div class="quick-section">
     <div class="section-head">
       <span class="label">快捷启动</span>
@@ -1094,6 +1129,8 @@ async function checkStatus() {
   const offline = s.offline || [];      // 掉线但 adb 还挂着
   config = s.config || {};
   quickMap = config.quick_launch || {};
+  renderLockState(devices);              // 主页：各设备锁屏状态 + 解锁按钮
+  renderUnlockSettings(devices);         // 设置页：按设备列密码输入框
   const verEl = document.getElementById('appVersion');
   if (verEl && s.version) verEl.textContent = 'v' + s.version;
 
@@ -1934,6 +1971,128 @@ async function saveReconnect(on) {
   await api('/api/config', 'POST', { reconnect_enabled: !!on });
   setHint(on ? '已开启掉线自动重连（间隔逐次拉长，最多试 10 次）'
              : '已关闭掉线自动重连', 9000);
+}
+
+/* ---------- 锁屏解锁 ---------- */
+// 密码不进 config.json，走独立的 /api/unlock/pin；后端只回「有没有设」，不回密码本身，
+// 所以输入框永远是空的（要改就重新输一遍，清空并确认即关闭该设备的功能）。
+// 密码后端按手机硬件序列号归档：同一台手机 USB 与无线共用一份。
+
+let lockKeyApplied = '';      // 主页解锁列表的渲染指纹，避免轮询时反复重建 DOM
+let unlockKeyApplied = '';    // 设置页密码框列表的渲染指纹
+
+// 主页：每台已连接设备显示锁屏状态与「解锁」按钮，点了才在后台静默解锁
+function renderLockState(devs) {
+  const sec = document.getElementById('lockSection');
+  const box = document.getElementById('lockList');
+  if (!sec || !box) return;
+  sec.style.display = devs.length ? '' : 'none';
+  const cnt = document.getElementById('lockCount');
+  if (cnt) cnt.textContent = devs.length ? '点「解锁」在后台静默解锁' : '';
+  const key = devs.map(d => d.serial + ':' + (d.locked ? '1' : '0') + (d.pin_set ? 'p' : ''))
+                  .join(',');
+  if (key === lockKeyApplied) return;
+  lockKeyApplied = key;
+  box.innerHTML = '';
+  devs.forEach(d => {
+    const row = document.createElement('div');
+    row.className = 'lock-item';
+
+    const name = document.createElement('span');
+    name.className = 'lock-name';
+    name.textContent = deviceLabel(d);
+
+    const addr = document.createElement('span');
+    addr.className = 'lock-addr';
+    addr.textContent = (d.usb ? 'USB · ' : '') + (d.ip || d.serial);
+
+    const state = document.createElement('span');
+    state.className = 'lock-state ' + (d.locked ? 'locked' : 'unlocked');
+    const ldot = document.createElement('i');
+    ldot.className = 'lock-dot';
+    state.appendChild(ldot);
+    state.appendChild(document.createTextNode(d.locked ? '已锁定' : '已解锁'));
+
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-mini';
+    btn.textContent = '🔓 解锁';
+    if (d.pin_set) {
+      btn.onclick = () => unlockNow(d.serial, btn);
+    } else {
+      btn.disabled = true;
+      btn.title = '先到「设置 → 设备与连接 → 锁屏解锁」里为这台手机填写密码';
+    }
+
+    row.appendChild(name);
+    row.appendChild(addr);
+    row.appendChild(state);
+    row.appendChild(btn);
+    box.appendChild(row);
+  });
+}
+
+// 设置页：按设备列出各自的密码输入框
+function renderUnlockSettings(devs) {
+  const box = document.getElementById('unlockList');
+  if (!box) return;
+  const key = devs.map(d => d.serial + ':' + (d.pin_set ? '1' : '0')).join(',');
+  if (key === unlockKeyApplied) return;
+  if (box.contains(document.activeElement)) return;   // 正在输入就别重建，免得打断
+  unlockKeyApplied = key;
+  box.innerHTML = '';
+  if (!devs.length) {
+    box.innerHTML = '<div class="scan-hint">暂无已连接设备：连上手机后再回到这里为它填写锁屏密码。</div>';
+    return;
+  }
+  devs.forEach(d => {
+    const g = document.createElement('div');
+    g.className = 'form-group';
+    g.style.marginBottom = '12px';
+
+    const label = document.createElement('label');
+    label.textContent = deviceLabel(d) + '　' + (d.usb ? 'USB · ' : '') + (d.ip || d.serial);
+
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.autocomplete = 'new-password';
+    input.placeholder = d.pin_set ? '已设置（重新输入可修改，留空可关闭）' : '留空 = 不启用';
+    input.onchange = () => saveUnlockPin(d.serial, input);
+
+    const hint = document.createElement('div');
+    hint.className = 'scan-hint';
+    hint.textContent = d.pin_set ? '已设置密码：同一台手机 USB 与无线共用。' : '未设置（不启用解锁）。';
+
+    g.appendChild(label);
+    g.appendChild(input);
+    g.appendChild(hint);
+    box.appendChild(g);
+  });
+}
+
+async function saveUnlockPin(serial, el) {
+  const val = el.value;
+  el.value = '';                 // 存完就清空输入框，界面上不留明文
+  let r = null;
+  try { r = await api('/api/unlock/pin', 'POST', {serial, pin: val || ''}); } catch (e) {}
+  if (!r || r.ok === false) { setHint('保存锁屏密码失败，请重试', 9000); return; }
+  unlockKeyApplied = '';         // 状态变了，下次轮询重建列表
+  setHint(r.pin_set
+    ? '已保存该设备的锁屏密码：到主页点它的「解锁」按钮即可后台解锁'
+    : '已关闭该设备的锁屏解锁', 9000);
+  await checkStatus();
+}
+
+async function unlockNow(serial, btn) {
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '解锁中…';
+  let r = null;
+  try { r = await api('/api/unlock/run', 'POST', {serial}); } catch (e) {}
+  btn.disabled = false;
+  btn.textContent = old;
+  if (!r) { setHint('解锁请求失败，请重试', 9000); return; }
+  setHint(r.msg || (r.ok ? '已解锁手机屏幕' : '解锁失败'), r.ok ? 6000 : 12000);
+  await checkStatus();
 }
 
 // 开机自启动：开启时同时打开「缩小到托盘」，开机后静默驻留托盘

@@ -28,9 +28,13 @@ from .device import (
     _skip_reconnect,
     device_info,
     device_states,
+    get_unlock_pin,
     launch_app,
     launch_desktop,
     run_adb,
+    screen_locked,
+    set_unlock_pin,
+    unlock_now,
     usb_to_wifi,
 )
 from .discover import deep_discover, deep_state, discover_devices
@@ -109,14 +113,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "version": APP_VERSION,
                 # devices=可用设备；pending=手机还停在「允许调试」弹窗；offline=掉线但 adb 还挂着
                 # usb=数据线直连（序列号不带端口），界面据此标成「USB 有线」并优先使用
+                # locked/pin_set=该设备的锁屏状态与是否已存密码，主页据此显示解锁状态与按钮。
+                # 密码本身不回传给界面：界面上只需要知道「有没有设」，不留多余副本。
                 "devices": [dict(device_info(d), model=_device_model(d), connected=True,
-                                 usb=(":" not in d))
+                                 usb=(":" not in d),
+                                 locked=screen_locked(d),
+                                 pin_set=bool(get_unlock_pin(d)))
                             for d in st["device"]],
                 "pending": [dict(device_info(d), model=None, usb=(":" not in d))
                             for d in st["unauthorized"]],
                 "offline": [dict(device_info(d), model=None, usb=(":" not in d))
                             for d in (st["offline"] + st["other"])],
-                "config": cfg
+                "config": cfg,
             })
 
         elif path == '/api/apps':
@@ -259,6 +267,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             addr = f"{ip}:{port}"
             out, err, _ = run_adb(["pair", addr, code], timeout=15)
             self.send_json({"out": out + err, "success": "Successfully paired" in out + err})
+
+        elif path == '/api/unlock/pin':
+            # 解锁密码单独走一条路由，不进 /api/config：它存在 EXE 数据流里、按手机归档，
+            # 不写进 config.json，免得配置文件被随手发出去时把密码带出去。
+            serial = body.get('serial', '')
+            if not serial:
+                self.send_json({"ok": False, "error": "no serial"}, 400)
+                return
+            ok = set_unlock_pin(serial, body.get('pin', ''))
+            self.send_json({"ok": ok, "pin_set": bool(get_unlock_pin(serial))})
+
+        elif path == '/api/unlock/run':
+            # 主页「解锁」按钮：在后台静默上滑 + 输密码，结果由前端提示
+            serial = body.get('serial', '')
+            if not serial:
+                self.send_json({"ok": False, "error": "no serial"}, 400)
+                return
+            self.send_json(unlock_now(serial))
 
         elif path == '/api/config':
             save_config(body)
