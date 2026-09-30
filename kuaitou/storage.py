@@ -18,12 +18,14 @@ APP_VERSION = "1.3.0"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
-# 未打包（源码直跑）时宿主文件就是本脚本。
+# 未打包（源码直跑）时，资源与数据都在项目根目录，即包目录（kuaitou/）的上一级——
+# 拆分成包之前这段代码在根目录的 launcher_server.py 里，__file__ 本身就是根目录，
+# 移进包内后必须多退一级，否则会错指到 kuaitou/ 里，导致找不到 scrcpy / index.html。
 if getattr(sys, "frozen", False):
     RES_DIR = sys._MEIPASS
     DATA_DIR = os.path.dirname(sys.executable)
 else:
-    RES_DIR = DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+    RES_DIR = DATA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 ADB_PATH = os.path.join(RES_DIR, "scrcpy", "adb.exe")
 SCRCPY_PATH = os.path.join(RES_DIR, "scrcpy", "scrcpy.exe")
@@ -44,7 +46,9 @@ ICON_EXTS = (".png", ".webp", ".jpg", ".jpeg")
 if getattr(sys, "frozen", False):
     EXE_PATH = os.path.abspath(sys.executable)
 else:
-    EXE_PATH = os.path.abspath(__file__)
+    # 源码态沿用拆分前的做法：数据流挂在项目根目录的入口脚本上，
+    # 配置 / 缓存 / 日志继续藏在入口脚本的数据流里，项目里不落下散文件。
+    EXE_PATH = os.path.join(RES_DIR, "launcher_server.py")
 
 CONFIG_STREAM = "config.json"                 # 用户配置
 APPS_CACHE_STREAM = "apps_cache.json"         # 应用列表缓存
