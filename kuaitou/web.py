@@ -33,6 +33,7 @@ from .device import (
     launch_desktop,
     run_adb,
     screen_locked,
+    screen_off,
     set_unlock_pin,
     unlock_now,
     usb_to_wifi,
@@ -113,7 +114,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "version": APP_VERSION,
                 # devices=可用设备；pending=手机还停在「允许调试」弹窗；offline=掉线但 adb 还挂着
                 # usb=数据线直连（序列号不带端口），界面据此标成「USB 有线」并优先使用
-                # locked/pin_set=该设备的锁屏状态与是否已存密码，主页据此显示解锁状态与按钮。
+                # locked/pin_set=该设备的锁屏状态与是否已存密码，顶栏据此显示解锁状态与按钮。
                 # 密码本身不回传给界面：界面上只需要知道「有没有设」，不留多余副本。
                 "devices": [dict(device_info(d), model=_device_model(d), connected=True,
                                  usb=(":" not in d),
@@ -279,12 +280,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json({"ok": ok, "pin_set": bool(get_unlock_pin(serial))})
 
         elif path == '/api/unlock/run':
-            # 主页「解锁」按钮：在后台静默上滑 + 输密码，结果由前端提示
+            # 顶栏「解锁」按钮：在后台点亮屏幕 + 上滑 + 输密码，结果由前端提示
             serial = body.get('serial', '')
             if not serial:
                 self.send_json({"ok": False, "error": "no serial"}, 400)
                 return
             self.send_json(unlock_now(serial))
+
+        elif path == '/api/screen/off':
+            # 顶栏「关闭物理屏幕」：按电源键熄屏，但临时顶住系统的「熄屏后自动锁定」，
+            # 手机只是黑屏、不会被锁上
+            serial = body.get('serial', '')
+            if not serial:
+                self.send_json({"ok": False, "error": "no serial"}, 400)
+                return
+            self.send_json(screen_off(serial))
 
         elif path == '/api/config':
             save_config(body)

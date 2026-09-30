@@ -64,6 +64,17 @@ def _acquire_single_instance():
     except Exception:
         return True     # 互斥体本身出问题不该导致应用打不开
 
+def _center_of_screen(w, h):
+    """算出主窗口居中时的左上角坐标（拿不到屏幕尺寸就返回 (None, None)，交给系统默认摆放）。"""
+    try:
+        user32 = ctypes.windll.user32
+        sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        if sw > 0 and sh > 0:
+            return max(0, (sw - w) // 2), max(0, (sh - h) // 2)
+    except Exception:
+        pass
+    return None, None
+
 def _run():
 
     silent = "--silent" in sys.argv        # 开机自启：静默启动，只驻托盘不弹主界面
@@ -91,11 +102,16 @@ def _run():
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
 
+    # 主窗口出现在屏幕中间：pywebview 默认按系统给的默认位置放，第一次打开会在左上角附近
+    win_w, win_h = 950, 850
+    win_x, win_y = _center_of_screen(win_w, win_h)
     window = webview.create_window(
         '快投',
         f'http://127.0.0.1:{port}',
-        width=950,
-        height=850,
+        width=win_w,
+        height=win_h,
+        x=win_x,
+        y=win_y,
         min_size=(700, 600),
         hidden=silent,          # 静默启动时不显示主界面（托盘右键可随时打开）
         js_api=Api()            # 暴露原生「另存为」对话框给前端

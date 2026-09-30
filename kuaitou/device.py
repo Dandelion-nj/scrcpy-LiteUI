@@ -397,20 +397,29 @@ def set_media_volume(vol, serial=None):
     run_adb(["shell", "media", "volume", "--stream", "3", "--set", str(vol)],
             timeout=5, serial=serial)
 
-# ============ 锁屏解锁 ============
+# ============ 锁屏解锁 / 熄屏 ============
 # 手机锁着的时候投出来的就是锁屏画面，还得在电脑上手滑一次才看得到内容。密码由用户事先
 # 在设置里按手机填好，存在 EXE 数据流里而不是 config.json——配置文件是会被随手发出去的
-# 东西，不该带密码。主页按设备显示当前锁屏状态并提供「解锁」按钮：点了才在后台静默
-# 上滑 + 输密码，投屏 / 启动应用本身不再自动动手机。
+# 东西，不该带密码。顶栏（跟随当前设备）显示锁屏状态并提供「解锁」按钮：点了才在后台
+# 静默点亮屏幕 + 上滑 + 输密码，投屏 / 启动应用本身不再自动动手机。
 # 只支持数字 PIN / 字母数字密码：图案锁没法用 input 模拟，指纹/人脸更不行，那两种情况下
 # 用户仍会看到锁屏，与没有此功能时一致。
+# 另有「关闭物理屏幕」：按电源键熄屏，但临时顶住系统的「熄屏后自动锁定」，这样手机只是
+# 黑屏、不会顺手锁上（投屏时把手机屏关掉省电，同时不用每次重新解锁）。
 _UNLOCK_XOR = b"kuaitou"        # 只求密码别明文躺在数据流里，不是加密，也不假装是
 _UNLOCK_SETTLE = 0.8            # 上滑动画 / 输入法弹出的等待时间
+_UNLOCK_WAKE_SETTLE = 0.6       # 点亮屏幕后等锁屏界面画出来，再去上滑
 _UNLOCK_HINTS = ("mDreamingLockscreen", "mShowingLockscreen")
 _DEFAULT_SCREEN = (1080, 2400)  # 取不到 wm size 时的兜底分辨率，够 swipe 用
 _LOCK_CACHE_TTL = 5.0           # 锁屏状态缓存秒数：界面 3 秒一轮询，dumpsys window 输出很大
 _UNLOCK_VERIFY_ROUNDS = 5       # 解锁后复查锁屏标志的轮数
 _UNLOCK_VERIFY_WAIT = 0.8       # 每轮复查的间隔：vivo 等 ROM 的标志翻转会晚一拍
+_LOCK_TIMEOUT_KEY = "lock_screen_lock_after_timeout"   # 熄屏后多久自动锁定（毫秒）
+_SCREEN_OFF_KEEP_MS = 86400000  # 熄屏瞬间临时顶成一天，让系统不要顺手锁屏
+_SCREEN_OFF_HOLD = 3.0          # 顶住几秒后再把用户原来的「自动锁定」放回去
+_SCREEN_OFF_SETTLE = 0.9        # 按完电源键等系统真正熄屏
+_SCREEN_OFF_ROUNDS = 3          # 复查熄屏是否生效的轮数（vivo 等 ROM 状态更新晚一拍）
+_SCREEN_OFF_WAIT = 0.6          # 每轮复查的间隔
 
 def _pin_scramble(raw):
     return bytes(b ^ _UNLOCK_XOR[i % len(_UNLOCK_XOR)] for i, b in enumerate(raw))
@@ -517,6 +526,13 @@ def _screen_size(serial=None):
     m = re.search(r"(\d+)x(\d+)", out or "")
     return (int(m.group(1)), int(m.group(2))) if m else _DEFAULT_SCREEN
 
+def wake_screen(serial=None):
+    """点亮手机屏幕（KEYCODE_WAKEUP=224）。
+
+    熄屏状态下锁屏标志还在，但上滑和输入都没有落点，必须先叫醒屏幕再动手。
+    """
+    run_adb(["shell", "input", "keyevent", "224"], timeout=8, serial=serial)
+
 def _swipe_and_type_pin(pin, serial=None):
     """上滑叫出密码输入框，把密码打进去再回车。"""
     w, h = _screen_size(serial)
@@ -532,7 +548,8 @@ def _swipe_and_type_pin(pin, serial=None):
 def unlock_now(serial=None):
     """在后台静默解锁这台设备的屏幕，返回 {ok, msg} 供界面提示。
 
-    主页「解锁」按钮走这里。没设密码就不碰屏幕，只回一条说明；屏幕本来就开着只回状态。
+    顶栏「解锁」按钮走这里。没设密码就不碰屏幕，只回一条说明；先点亮屏幕再复查锁屏状态
+    ——熄屏时上滑 / 输密码都落不到锁屏界面上，那是真机反馈过的失败原因之一。
     解锁后复查锁屏标志：vivo 这类 ROM 的标志翻转会晚一拍，所以多给几轮复查，别把
     「其实已经解开、只是标志还没跟上」误报成解锁失败。任何一步出错都只记结果，不抛异常。
     """
@@ -541,8 +558,10 @@ def unlock_now(serial=None):
         if not pin:
             return {"ok": False,
                     "msg": "这台设备还没设置锁屏密码：请到「设置 → 设备与连接 → 锁屏解锁」里填写"}
-        if not screen_locked(serial):
-            return {"ok": True, "msg": "屏幕已经是解锁状态"}
+        wake_screen(serial)
+        time.sleep(_UNLOCK_WAKE_SETTLE)
+        if not screen_locked(serial, force=True):
+            return {"ok": True, "msg": "屏幕已点亮，当前没有锁屏"}
         _swipe_and_type_pin(pin, serial)
         for _ in range(_UNLOCK_VERIFY_ROUNDS):
             if not screen_locked(serial, force=True):
@@ -553,6 +572,65 @@ def unlock_now(serial=None):
                        "（图案锁 / 指纹 / 人脸无法自动解锁）"}
     except Exception as e:
         return {"ok": False, "msg": "解锁出错：%s" % e}
+
+def _restore_lock_timeout(serial, original):
+    """把「熄屏后自动锁定」恢复成用户原来的值；原来没有这条设置就删掉。"""
+    value = (original or "").strip()
+    if value and value.lower() != "null":
+        run_adb(["shell", "settings", "put", "secure", _LOCK_TIMEOUT_KEY, value],
+                timeout=8, serial=serial)
+    else:
+        run_adb(["shell", "settings", "delete", "secure", _LOCK_TIMEOUT_KEY],
+                timeout=8, serial=serial)
+
+def _restore_lock_timeout_later(serial, original):
+    """熄屏几秒后再还原设置：系统是熄屏那一刻读这个值决定锁不锁的，晚点还原不影响。"""
+    try:
+        time.sleep(_SCREEN_OFF_HOLD)
+        _restore_lock_timeout(serial, original)
+    except Exception:
+        pass
+
+def _screen_awake(serial=None):
+    """手机是否亮着屏（dumpsys power 的 mWakefulness）。取不到标志返回 None，不做判断。"""
+    out, _, code = run_adb(["shell", "dumpsys", "power"], timeout=10, serial=serial)
+    if code != 0 or not out:
+        return None
+    m = re.search(r"mWakefulness=(\w+)", out)
+    return m.group(1) == "Awake" if m else None
+
+def screen_off(serial=None):
+    """关闭手机物理屏幕，但不要让手机顺手锁上，返回 {ok, msg} 供界面提示。
+
+    单纯发一个电源键会走系统的「熄屏后自动锁定」，把手机锁掉（还得再解锁）。所以按电源键
+    之前先把这条设置临时顶成一天，熄屏后再还原：系统只在熄屏那一刻读它，用户自己的设置
+    不会被改坏。熄屏结果用 dumpsys power 复查，不假装成功。
+    """
+    try:
+        orig, _, orig_rc = run_adb(["shell", "settings", "get", "secure", _LOCK_TIMEOUT_KEY],
+                                   timeout=8, serial=serial)
+        _, _, put_rc = run_adb(["shell", "settings", "put", "secure", _LOCK_TIMEOUT_KEY,
+                                str(_SCREEN_OFF_KEEP_MS)], timeout=8, serial=serial)
+        run_adb(["shell", "input", "keyevent", "26"], timeout=8, serial=serial)   # 26 = 电源键
+        if put_rc == 0:
+            # 读不到原值时按“删掉这条设置”还原：系统默认（立即锁定）本来就等同没设过
+            threading.Thread(target=_restore_lock_timeout_later,
+                             args=(serial, orig if orig_rc == 0 else ""), daemon=True).start()
+        time.sleep(_SCREEN_OFF_SETTLE)
+        awake = None
+        for _ in range(_SCREEN_OFF_ROUNDS):
+            awake = _screen_awake(serial)
+            if awake is not True:
+                break
+            time.sleep(_SCREEN_OFF_WAIT)
+        if awake is True:
+            return {"ok": False, "msg": "已按电源键但屏幕还亮着：请看一眼手机是否停在需要操作的界面"}
+        msg = "已关闭手机物理屏幕，手机不会被锁定"
+        if put_rc != 0:
+            msg += "（这次没能顶住系统的「自动锁定」，如果手机被锁上，用「解锁」按钮解开）"
+        return {"ok": True, "msg": msg}
+    except Exception as e:
+        return {"ok": False, "msg": "关闭屏幕出错：%s" % e}
 
 # 同一台设备上的同一个应用只保留一个投屏窗口：手机端没有应用多开，重复启动要么报错
 # 要么把已有的那个顶掉。所以再次点同一个应用时不再拉起 scrcpy，直接把已有窗口唤到前台。

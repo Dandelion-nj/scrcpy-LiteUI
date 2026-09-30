@@ -3,6 +3,8 @@
 adb 一律不打真的：把 run_adb 换成返回固定输出的假函数，只验证解析与选择逻辑。
 """
 
+import time
+
 import pytest
 
 from kuaitou import device
@@ -138,12 +140,15 @@ def _fake_adb(out):
 
 
 class _FakeAdb:
-    """按命令分派的假 adb：记录收到的命令，锁屏状态可以随时改。"""
+    """按命令分派的假 adb：记录收到的命令，锁屏 / 亮屏状态与 secure 设置可以随时改。"""
 
     def __init__(self, sn="SN-ONE", serial_map=None):
         self.sn = sn
         self.serial_map = serial_map or {}
         self.locked = False
+        self.awake = True           # dumpsys power 里的亮屏状态
+        self.settings = {}          # settings get/put/delete 的内存版
+        self.settings_fail = False  # 置 True 时写设置失败，验证界面会如实提示
         self.dumpsys_calls = 0
         self.calls = []
         self.on_text = None      # 收到 input text 时回调（用来模拟解锁生效）
@@ -153,10 +158,24 @@ class _FakeAdb:
         if args[1:3] == ["getprop", "ro.serialno"]:
             sn = self.serial_map.get(serial, self.sn)
             return (sn + "\n") if sn else "", "", 0
+        if args[1:3] == ["dumpsys", "power"]:
+            flag = "Awake" if self.awake else "Asleep"
+            return "  mWakefulness=%s\n" % flag, "", 0
         if args[1:2] == ["dumpsys"]:
             self.dumpsys_calls += 1
             flag = "true" if self.locked else "false"
             return "  mDreamingLockscreen=%s\n" % flag, "", 0
+        if args[1:2] == ["settings"]:
+            if args[2] == "get":
+                # 真 run_adb 会把 stdout 去掉首尾空白，假 adb 照做
+                return self.settings.get(args[4], "null"), "", 0
+            if self.settings_fail:
+                return "", "write failed", 1
+            if args[2] == "put":
+                self.settings[args[4]] = args[5]
+            elif args[2] == "delete":
+                self.settings.pop(args[4], None)
+            return "", "", 0
         if args[1:2] == ["wm"]:
             return "Physical size: 1080x2400\n", "", 0
         if args[1:3] == ["input", "text"] and self.on_text:
@@ -295,13 +314,97 @@ def test_unlock_now_without_pin_does_not_touch_screen(pin_store, monkeypatch):
 
 
 def test_unlock_now_when_already_unlocked(pin_store, monkeypatch):
+    """没锁屏时只负责点亮屏幕，不该往手机上乱输字符。"""
     adb = _FakeAdb()
     monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
     device.set_unlock_pin("V2324A", "1234")
     adb.locked = False
     r = device.unlock_now("V2324A")
-    assert r["ok"] is True and "已经是解锁" in r["msg"]
-    assert _sends_input(adb) == []
+    assert r["ok"] is True and "已点亮" in r["msg"]
+    assert _sends_input(adb) == [["shell", "input", "keyevent", "224"]]
+
+
+def test_unlock_now_wakes_screen_before_swiping(pin_store, monkeypatch):
+    """真机反馈：熄屏时上滑 / 输密码都落不到锁屏界面上，必须先点亮屏幕。"""
+    adb = _FakeAdb()
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    device.set_unlock_pin("V2324A", "1234")
+    adb.locked = True                        # 熄屏 + 锁屏：先 wake 才能解锁
+    adb.on_text = lambda: setattr(adb, "locked", False)
+
+    r = device.unlock_now("V2324A")
+    assert r["ok"] is True and "已解锁" in r["msg"]
+    wake = adb.calls.index(["shell", "input", "keyevent", "224"])
+    swipe = adb.calls.index(["shell", "input", "swipe", "540", "1920", "540", "600", "200"])
+    text = adb.calls.index(["shell", "input", "text", "1234"])
+    assert wake < swipe < text
+
+
+def test_screen_off_keeps_auto_lock_away_then_restores(monkeypatch):
+    """按电源键之前先把「熄屏后自动锁定」顶成一天，熄屏后原值要交还回去。"""
+    adb = _FakeAdb()
+    adb.settings[device._LOCK_TIMEOUT_KEY] = "5000"
+    adb.awake = False                        # 按完电源键后系统进入熄屏状态
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    seen = {}
+    monkeypatch.setattr(device, "_restore_lock_timeout_later",
+                        lambda serial, orig: seen.update(serial=serial, orig=orig))
+
+    r = device.screen_off("V2324A")
+    assert r["ok"] is True and "不会被锁定" in r["msg"]
+    assert ["shell", "settings", "put", "secure", device._LOCK_TIMEOUT_KEY,
+            str(device._SCREEN_OFF_KEEP_MS)] in adb.calls
+    assert ["shell", "input", "keyevent", "26"] in adb.calls
+    for _ in range(100):                     # 还原在后台线程里，等它把原始值交出去
+        if seen:
+            break
+        time.sleep(0.01)
+    assert seen == {"serial": "V2324A", "orig": "5000"}
+
+
+def test_screen_off_reports_when_screen_stays_on(monkeypatch):
+    """手机没熄屏时必须如实说，而不是假装成功。"""
+    adb = _FakeAdb()
+    adb.awake = True
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    monkeypatch.setattr(device, "_restore_lock_timeout_later", lambda serial, orig: None)
+    r = device.screen_off("V2324A")
+    assert r["ok"] is False and "还亮着" in r["msg"]
+
+
+def test_screen_off_warns_when_lock_setting_cannot_be_written(monkeypatch):
+    """顶不住「自动锁定」时也照样熄屏，但要提醒用户可能会被锁上。"""
+    adb = _FakeAdb()
+    adb.awake = False
+    adb.settings_fail = True
+    monkeypatch.setattr(device, "run_adb", adb)
+    monkeypatch.setattr(device, "time", _FakeClock())
+    r = device.screen_off("V2324A")
+    assert r["ok"] is True and "自动锁定" in r["msg"]
+    assert ["shell", "input", "keyevent", "26"] in adb.calls
+
+
+def test_screen_off_never_raises(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("adb 没了")
+
+    monkeypatch.setattr(device, "run_adb", boom)
+    r = device.screen_off("V2324A")
+    assert r["ok"] is False and r["msg"]
+
+
+def test_restore_lock_timeout_puts_back_or_deletes(monkeypatch):
+    adb = _FakeAdb()
+    adb.settings[device._LOCK_TIMEOUT_KEY] = str(device._SCREEN_OFF_KEEP_MS)
+    monkeypatch.setattr(device, "run_adb", adb)
+    device._restore_lock_timeout("V2324A", "5000")
+    assert adb.settings[device._LOCK_TIMEOUT_KEY] == "5000"
+    device._restore_lock_timeout("V2324A", "null")      # 原来没设过 → 删掉这条设置
+    assert device._LOCK_TIMEOUT_KEY not in adb.settings
 
 
 def test_unlock_now_swipes_and_types_pin(pin_store, monkeypatch):
