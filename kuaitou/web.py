@@ -19,18 +19,34 @@ import urllib.request
 
 import webview
 
-from .storage import APP_VERSION, RES_DIR, load_config, save_config
+from .apps import _app_name, list_apps, request_icon
 from .device import (
-    CLASSIC_ADB_PORT, device_info, device_states, launch_app, launch_desktop,
-    run_adb, usb_to_wifi, _device_model, _launch_result, _remember_device,
+    CLASSIC_ADB_PORT,
+    _device_model,
+    _launch_result,
+    _remember_device,
     _skip_reconnect,
+    device_info,
+    device_states,
+    launch_app,
+    launch_desktop,
+    run_adb,
+    usb_to_wifi,
 )
 from .discover import deep_discover, deep_state, discover_devices
-from .apps import list_apps, request_icon, _app_name
+from .storage import APP_VERSION, RES_DIR, load_config, save_config
 from .system import (
-    collect_logs, get_window, run_diag,
-    _apply_autostart, _qr_lock, _qr_payload, _qr_snapshot, _qr_state,
-    _qr_svg, _qr_worker, _tray_sync,
+    _apply_autostart,
+    _qr_lock,
+    _qr_payload,
+    _qr_snapshot,
+    _qr_state,
+    _qr_svg,
+    _qr_worker,
+    _tray_sync,
+    collect_logs,
+    get_window,
+    run_diag,
 )
 
 _SSE_INTERVAL = 0.25     # SSE 推送时检查进度的间隔（秒）
@@ -39,7 +55,7 @@ _SSE_INTERVAL = 0.25     # SSE 推送时检查进度的间隔（秒）
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
-    
+
     def send_json(self, data, code=200):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
@@ -74,18 +90,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 time.sleep(_SSE_INTERVAL)
         except OSError:
             pass        # 前端关了窗口或已切回轮询：连接断开，安静收工
-    
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        
+
         if path == '/':
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
             with open(os.path.join(RES_DIR, 'index.html'), 'r', encoding='utf-8') as f:
                 self.wfile.write(f.read().encode())
-        
+
         elif path == '/api/status':
             st = device_states()
             cfg = load_config()
@@ -102,7 +118,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             for d in (st["offline"] + st["other"])],
                 "config": cfg
             })
-        
+
         elif path == '/api/apps':
             qs = urllib.parse.parse_qs(parsed.query)
             force = qs.get('force', ['0'])[0] == '1'
@@ -124,7 +140,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == '/api/qr/status':
             self.send_json(_qr_snapshot())
-        
+
         elif path == '/api/diag':
             qs = urllib.parse.parse_qs(parsed.query)
             self.send_json(run_diag(deep=qs.get('deep', ['0'])[0] == '1'))
@@ -146,7 +162,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.send_json(_launch_result(proc))
             else:
                 self.send_json({"ok": False, "error": "no package"}, 400)
-        
+
         elif path == '/api/icon':
             qs = urllib.parse.parse_qs(parsed.query)
             pkg = qs.get('pkg', [''])[0]
@@ -175,7 +191,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             qs = urllib.parse.parse_qs(parsed.query)
             serial = qs.get('device', [''])[0] or None
             self.send_json(_launch_result(launch_desktop(serial=serial)))
-    
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -185,7 +201,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self.send_json({"ok": False, "error": "invalid json"}, 400)
             return
-        
+
         if path == '/api/connect':
             ip = body.get('ip', '')
             port = str(body.get('port', '') or CLASSIC_ADB_PORT)
@@ -204,7 +220,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 save_config({"ip": ip, "port": port})
                 _remember_device(addr)
             self.send_json({"success": ok, "serial": addr, "out": out, "err": err})
-        
+
         elif path == '/api/disconnect':
             dev = body.get('device', '')
             if dev:
@@ -235,7 +251,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 _qr_state["tok"] += 1
                 _qr_state.update({"state": "idle", "message": ""})
             self.send_json({"ok": True})
-        
+
         elif path == '/api/pair':
             ip = body.get('ip', '')
             port = body.get('port', '')
@@ -243,7 +259,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             addr = f"{ip}:{port}"
             out, err, _ = run_adb(["pair", addr, code], timeout=15)
             self.send_json({"out": out + err, "success": "Successfully paired" in out + err})
-        
+
         elif path == '/api/config':
             save_config(body)
             if 'minimize_to_tray' in body or 'autostart' in body:

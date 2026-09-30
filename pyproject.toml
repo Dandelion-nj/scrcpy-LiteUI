@@ -1,0 +1,16 @@
+# 开发工具统一配置（运行时不读取本文件）。
+# 用法见 README「开发」一节：ruff 静态检查、pytest 单元测试。
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+# 只检查源码；打包产物与虚拟环境不参与
+extend-exclude = ["dist", "build", ".build"]
+
+[tool.ruff.lint]
+# E/W=pycodestyle、F=pyflakes、I=import 排序、B=常见陷阱、C4=推导式简化。
+# 不含 UP（pyupgrade）：本项目的 % 格式化与编码声明是刻意统一的风格，不做迁移。
+select = ["E", "F", "W", "I", "B", "C4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,5 +1,5 @@
 {
-  "ip": "172.19.163.3",
+  "ip": "",
   "port": "5555",
   "res_w": "1080",
   "res_h": "2400",
@@ -11,7 +11,7 @@
   "bitrate": "8",
   "scale": "1.0",
   "fps": "60",
-  "audio_mode": "phone",
+  "audio_mode": "both",
   "quick_launch": {},
   "minimize_to_tray": false
 }

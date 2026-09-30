@@ -19,13 +19,17 @@ import threading
 import webview
 
 from kuaitou import device, system
-from kuaitou.web import Api, Handler
+
 # 入口是组装点，直接引用各模块的私有名接线（对外暴露反而多一层无意义的包装）
 from kuaitou.system import (
-    _open_webview2_download, _report_fatal, _show_message,
-    _tray_enabled, _tray_start, _webview2_available,
+    _open_webview2_download,
+    _report_fatal,
+    _show_message,
+    _tray_enabled,
+    _tray_start,
+    _webview2_available,
 )
-
+from kuaitou.web import Api, Handler
 
 # ---------- 单实例保护 ----------
 # 两个「快投」同时跑，会各自拉一份 adb、各自往 exe 的数据流里写配置和日志（互相覆盖），

@@ -16,18 +16,39 @@ import sys
 import threading
 import time
 
-from .storage import (
-    APP_VERSION, ADB_PATH, DATA_DIR, ERROR_LOG_STREAM, EXE_PATH,
-    LAUNCH_LOG_STREAM, RES_DIR, SCAN_LOG_STREAM,
-    load_config, save_config, storage_location, storage_read, _write_text,
-)
+from .apps import APPS_SCAN_TIMEOUT, _app_name
 from .device import (
-    CLASSIC_ADB_PORT, SCRCPY_PATH, adb_server_ours, device_info, get_devices,
-    get_startupinfo, launch_app, launch_desktop, run_adb, shutdown_all,
-    _device_model, _remember_device, _serial_args, _skip_reconnect,
+    CLASSIC_ADB_PORT,
+    SCRCPY_PATH,
+    _device_model,
+    _remember_device,
+    _serial_args,
+    _skip_reconnect,
+    adb_server_ours,
+    device_info,
+    get_devices,
+    get_startupinfo,
+    launch_app,
+    launch_desktop,
+    run_adb,
+    shutdown_all,
 )
 from .discover import mdns_available, mdns_services
-from .apps import APPS_SCAN_TIMEOUT, _app_name
+from .storage import (
+    ADB_PATH,
+    APP_VERSION,
+    DATA_DIR,
+    ERROR_LOG_STREAM,
+    EXE_PATH,
+    LAUNCH_LOG_STREAM,
+    RES_DIR,
+    SCAN_LOG_STREAM,
+    _write_text,
+    load_config,
+    save_config,
+    storage_location,
+    storage_read,
+)
 
 # ---------- 扫码连接（二维码配对，Android 11+）----------
 # 电脑显示二维码（WIFI:T:ADB;S:<名字>;P:<密码>;;），手机在「无线调试 → 使用二维码

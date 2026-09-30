@@ -11,7 +11,6 @@ import json
 import os
 import sys
 
-
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
 APP_VERSION = "1.3.0"
@@ -21,11 +20,18 @@ APP_VERSION = "1.3.0"
 # 未打包（源码直跑）时，资源与数据都在项目根目录，即包目录（kuaitou/）的上一级——
 # 拆分成包之前这段代码在根目录的 launcher_server.py 里，__file__ 本身就是根目录，
 # 移进包内后必须多退一级，否则会错指到 kuaitou/ 里，导致找不到 scrcpy / index.html。
-if getattr(sys, "frozen", False):
-    RES_DIR = sys._MEIPASS
-    DATA_DIR = os.path.dirname(sys.executable)
-else:
-    RES_DIR = DATA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _resolve_paths():
+    """返回 (资源目录, 数据目录, 数据流宿主文件)。"""
+    if getattr(sys, "frozen", False):
+        return (sys._MEIPASS,
+                os.path.dirname(sys.executable),
+                os.path.abspath(sys.executable))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # 源码态沿用拆分前的做法：数据流挂在项目根目录的入口脚本上，
+    # 配置 / 缓存 / 日志继续藏在入口脚本的数据流里，项目里不落下散文件。
+    return root, root, os.path.join(root, "launcher_server.py")
+
+RES_DIR, DATA_DIR, EXE_PATH = _resolve_paths()
 
 ADB_PATH = os.path.join(RES_DIR, "scrcpy", "adb.exe")
 SCRCPY_PATH = os.path.join(RES_DIR, "scrcpy", "scrcpy.exe")
@@ -43,12 +49,6 @@ ICON_EXTS = (".png", ".webp", ".jpg", ".jpeg")
 # 所在卷不是 NTFS（FAT32 / 网络盘 / 无写权限）时 ADS 会失败，此时自动退回 exe 同目录的
 # 普通文件，功能不受影响；当前实际存储位置会在诊断报告里说明。
 # 实测注意：ADS 路径不支持 os.replace（WinError 87），因此一律直接覆盖写。
-if getattr(sys, "frozen", False):
-    EXE_PATH = os.path.abspath(sys.executable)
-else:
-    # 源码态沿用拆分前的做法：数据流挂在项目根目录的入口脚本上，
-    # 配置 / 缓存 / 日志继续藏在入口脚本的数据流里，项目里不落下散文件。
-    EXE_PATH = os.path.join(RES_DIR, "launcher_server.py")
 
 CONFIG_STREAM = "config.json"                 # 用户配置
 APPS_CACHE_STREAM = "apps_cache.json"         # 应用列表缓存
@@ -178,8 +178,8 @@ def storage_location():
     return "\n".join(lines)
 
 DEFAULT_CONFIG = {
-    "ip": "172.19.163.3",
-    "port": "42849",
+    "ip": "",                   # 首次运行不带任何设备地址，由用户扫描 / 手动连接后再记住
+    "port": "5555",
     "res_w": "1080",
     "res_h": "2400",
     "res_presets": ["720x1280", "1080x2400", "1440x3200"],

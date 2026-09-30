@@ -18,7 +18,7 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 | 下载下来直接用 | [快速开始](#快速开始) |
 | 学会怎么连手机、怎么投屏 | [使用教程](#使用教程) |
 | 遇到问题排查 | [常见问题](#常见问题) |
-| 自己改代码 / 重新打包 | [从源码运行](#从源码运行) · [打包](#打包) |
+| 自己改代码 / 重新打包 | [从源码运行](#从源码运行) · [打包](#打包) · [开发](#开发) |
 | 了解设备发现的原理 | [设备发现](#设备发现) |
 | 知道配置和日志存哪了 | [存储说明](#存储说明) |
 
@@ -44,7 +44,8 @@ Windows 上给 [scrcpy](https://github.com/Genymobile/scrcpy) 套的一层图形
 
 **其它**
 
-- 应用列表扫描 + 一键启动，内置图标匹配（多级回退：精确 → 双向前缀/后缀 → 名称别名）
+- 应用列表扫描 + 一键启动，内置图标匹配（多级回退：精确 → 归一化 → 双向前缀/后缀 →
+  末两段重合 → 剥版本后缀 → 相似度兜底 → 按应用名别名兜底），命中率高且不联网
 - 托盘常驻：关闭最小化到托盘，托盘右键可直接投屏 / 启动应用
 - 开机自启动（默认关闭），启用后静默启动到托盘
 - 单实例保护（重复启动会唤起已有窗口，不会开出第二份 adb）
@@ -80,8 +81,9 @@ py -3.12 -m venv .build\venv
 依赖清单见 [requirements.txt](requirements.txt)，版本已钉住。也可以双击 `start_web.vbs` 启动。
 
 **注意**：`icons/` 目录未包含在本仓库中（原因见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)）。
-缺少它不影响运行，只是应用列表中的图标会走降级显示。如需完整图标效果，自行准备
-以包名命名的 `.webp` 文件放入 `icons/` 即可。`scrcpy/` 目录已包含，无需另外下载。
+缺少它不影响运行，只是应用列表中的图标会走降级显示。如需完整图标效果，
+跑一次 `scripts\fetch_icons.py` 自动补齐（见[开发 → 图标素材库](#图标素材库)），
+或自行准备以包名命名的 `.webp` 文件放入 `icons/`。`scrcpy/` 目录已包含，无需另外下载。
 
 ## 使用教程
 
@@ -324,11 +326,40 @@ KuaitouBuild.spec         PyInstaller 打包配置
 start_web.vbs             源码态启动脚本
 scrcpy/                   随附的 scrcpy / adb 运行时（第三方，见声明）
 icons/                    应用图标库（未入库）
+tests/                    pytest 测试（图标匹配 / 配置合并 / adb 解析等纯逻辑）
+scripts/fetch_icons.py    图标素材库维护脚本（补图 + 瘦身）
+pyproject.toml            ruff 与 pytest 配置
 ```
 
 模块依赖是单向的：`storage ← device ← discover ← web`，`apps` / `system` 建于其上，
 入口 `launcher_server.py` 只负责组装。深度搜索的进度通过 SSE（`/api/discover/deep/stream`）
 推送，前端在 EventSource 不可用或断线时自动回退到 700ms 轮询。
+
+## 开发
+
+```powershell
+.build\venv\Scripts\python.exe -m ruff check .     # 静态检查（配置见 pyproject.toml）
+.build\venv\Scripts\python.exe -m pytest -q        # 跑测试
+```
+
+测试只覆盖纯逻辑（图标匹配、配置合并、路径解析、adb 输出解析），不碰真机也不联网，
+所以在任何机器上都秒级跑完。CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)）
+对每个提交跑一遍 lint；测试跑在 windows-latest 上。
+
+### 图标素材库
+
+`icons/` 不入库，换台机器重新打包前用脚本补回来：
+
+```powershell
+.build\venv\Scripts\python.exe scripts\fetch_icons.py          # 只补缺的
+.build\venv\Scripts\python.exe scripts\fetch_icons.py --slim   # 顺带统一到 128px WebP
+.build\venv\Scripts\python.exe scripts\fetch_icons.py --limit 20
+```
+
+目标包名来自脚本内置的常用应用清单 + 本机 `apps_cache.json` 里真机装过的应用，
+图标来源与程序运行时在线抓取用的是同一套（应用宝 → 小米商店 → iTunes）。
+`--slim` 会把整个素材库统一成 128px WebP（界面里图标最大显示 48px，够 2 倍屏用），
+体积大约降到原来的四成。
 
 ## 设备发现
 

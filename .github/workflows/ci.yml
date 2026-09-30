@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    # 纯静态检查，不依赖系统，用 Linux 跑得快
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装开发依赖
+        run: pip install ruff pytest
+      - name: 静态检查（ruff）
+        run: ruff check .
+
+  test:
+    # 本项目只跑 Windows，测试也在 Windows 上跑：能顺带发现平台相关的导入问题
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 单元测试（pytest）
+        run: pytest -q

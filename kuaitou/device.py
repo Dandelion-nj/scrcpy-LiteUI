@@ -18,9 +18,15 @@ import time
 from ctypes import wintypes
 
 from .storage import (
-    ADB_PATH, SCRCPY_PATH, LAUNCH_LOG_STREAM,
-    load_config, save_config, storage_open_append, _read_log_tail,
+    ADB_PATH,
+    LAUNCH_LOG_STREAM,
+    SCRCPY_PATH,
+    _read_log_tail,
+    load_config,
+    save_config,
+    storage_open_append,
 )
+
 
 def get_startupinfo():
     si = subprocess.STARTUPINFO()
@@ -77,8 +83,8 @@ def _serial_args(serial=None):
     return ["-s", want if want in devs else devs[0]]
 
 def _popen_adb(args, timeout, binary=False):
-    kwargs = dict(capture_output=True, timeout=timeout,
-                  startupinfo=get_startupinfo(), creationflags=0x08000000)
+    kwargs = {"capture_output": True, "timeout": timeout,
+              "startupinfo": get_startupinfo(), "creationflags": 0x08000000}
     if binary:
         kwargs["text"] = False      # 远程按块读 APK，需要原始字节
     else:
@@ -334,7 +340,7 @@ def build_scrcpy_cmd(pkg=None, serial=None):
     # 1 倍缩放 = 电脑 DPI（新虚拟显示器的密度与电脑一致，观感最接近原生）
     dpi = max(72, int(round(_pc_dpi() * scale)))
     audio_mode = cfg.get("audio_mode", "both")
-    
+
     cmd = [SCRCPY_PATH] + _serial_args(serial) + [
         "--flex-display",
         "--stay-awake",
@@ -344,7 +350,7 @@ def build_scrcpy_cmd(pkg=None, serial=None):
     cmd += _stream_args(cfg) + _video_args(cfg)
     if audio_mode == "phone":
         cmd.append("--no-audio")
-    
+
     if pkg:
         cmd.append(f"--new-display={w}x{h}/{dpi}")
         cmd.append("--no-vd-system-decorations")   # 虚拟屏里不画状态栏/导航栏
@@ -378,7 +384,7 @@ def get_media_volume(serial=None):
     out, _, _ = run_adb(["shell", "media", "volume", "--stream", "3"], timeout=5, serial=serial)
     try:
         return int(out.strip().split()[-1])
-    except:
+    except Exception:
         return -1
 
 def set_media_volume(vol, serial=None):
@@ -402,17 +408,17 @@ def launch_app(pkg, serial=None):
     cfg = load_config()
     audio_mode = cfg.get("audio_mode", "both")
     old_vol = -1
-    
+
     if audio_mode == "pc":
         old_vol = get_media_volume(serial)
         if old_vol >= 0:
             set_media_volume(0, serial)
-    
+
     cmd = build_scrcpy_cmd(pkg=pkg, serial=serial)
     proc = _spawn(cmd, tag="镜像应用 %s @ %s" % (pkg, serial or "-"))
     with _mirror_lock:
         _mirror_procs[key] = proc
-    
+
     def wait_and_kill():
         nudge_scrcpy_window(proc)
         proc.wait()
@@ -437,7 +443,7 @@ def launch_app(pkg, serial=None):
 def launch_desktop(serial=None):
     cfg = load_config()
     audio_mode = cfg.get("audio_mode", "both")
-    
+
     cmd = ([SCRCPY_PATH] + _serial_args(serial)
            + ["--stay-awake", "--window-x=600", "--window-y=50"]
            + _stream_args(cfg) + _video_args(cfg))
@@ -448,7 +454,7 @@ def launch_desktop(serial=None):
         old_vol = get_media_volume(serial)
         if old_vol >= 0:
             set_media_volume(0, serial)
-    
+
     proc = _spawn(cmd, tag="镜像桌面 @ %s" % (serial or "-"))
     def wait_restore():
         proc.wait()
@@ -594,7 +600,7 @@ _adb_server_ours = False   # 由入口在首次调用 adb 之前经 note_adb_ser
 
 def cleanup_scrcpy():
     try:
-        subprocess.run(["taskkill", "/f", "/im", "scrcpy.exe"], 
+        subprocess.run(["taskkill", "/f", "/im", "scrcpy.exe"],
                       capture_output=True, startupinfo=get_startupinfo(), creationflags=0x08000000)
     except Exception:
         pass

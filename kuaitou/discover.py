@@ -19,11 +19,19 @@ import threading
 import time
 from collections import deque
 
-from .storage import load_config
 from .device import (
-    CLASSIC_ADB_PORT, get_devices, get_startupinfo, device_info, device_states,
-    run_adb, _ip_sort_key, _usable_ip, _remember_device, _skip_reconnect,
+    CLASSIC_ADB_PORT,
+    _ip_sort_key,
+    _remember_device,
+    _skip_reconnect,
+    _usable_ip,
+    device_info,
+    device_states,
+    get_devices,
+    get_startupinfo,
+    run_adb,
 )
+from .storage import load_config
 
 # 无线调试的设备发现：不再扫描 30000-49999 随机端口段（太慢，且扫描时 connect
 # 会顺带连上多台设备导致后续 scrcpy 报 Multiple devices），改为只找 IP、只探 5555。
@@ -94,7 +102,7 @@ def _probe_5555(ips):
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=_PROBE_WORKERS) as ex:
             for ip, ok in zip(ips, ex.map(lambda a: _probe_port(a, CLASSIC_ADB_PORT),
-                                          ips, chunksize=8)):
+                                          ips, chunksize=8), strict=True):
                 if ok:
                     hits.add(ip)
     except Exception:
