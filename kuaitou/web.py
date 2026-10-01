@@ -111,11 +111,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == '/':
+            # 主题在发页面时就定下来：页面里的令牌默认是浅色，用户选了深色就把
+            # data-theme="dark" 直接写进 <html> 再发出去。这样首屏画的就是最终颜色，
+            # 不会先亮着画一帧、等第一个 /api/status 回来才翻成深色（那一下就是
+            # 「切完主题重开应用时闪一下」）。no-store 同样是为了别让 WebView 复用
+            # 之前那份带旧主题的缓存页。
+            theme = 'dark' if load_config().get('theme') == 'dark' else 'light'
+            with open(os.path.join(RES_DIR, 'index.html'), 'r', encoding='utf-8') as f:
+                html = f.read()
+            html = re.sub(r'<html\b', '<html data-theme="%s"' % theme, html, count=1)
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
             self.end_headers()
-            with open(os.path.join(RES_DIR, 'index.html'), 'r', encoding='utf-8') as f:
-                self.wfile.write(f.read().encode())
+            self.wfile.write(html.encode())
 
         elif path == '/api/status':
             st = device_states()

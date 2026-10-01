@@ -120,7 +120,7 @@ def _run():
     system.set_window(window)
     # 标题栏跟界面主题同色，并去掉图标与标题文字（类似无边框）；窗口要等一会儿才出来，
     # 这里塞后台线程自己等，不阻塞启动。切换主题时由 /api/config 再调一次。
-    winbar.style_main_window(load_config().get("theme", "dark"))
+    winbar.style_main_window(load_config().get("theme", "light"))
 
     def on_closing():
         # 开了"缩小到托盘"（或本次是静默自启）且不是从托盘选的"退出应用"：点关闭只把

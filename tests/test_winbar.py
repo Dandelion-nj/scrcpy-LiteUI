@@ -1,7 +1,8 @@
 """原生标题栏增强：纯逻辑部分（登记表、按钮命中、布局避让系统按钮）。
 
 真实的窗口 / DWM / GDI 绘制不在这里测 —— 那要靠真机投屏实测。测试只保证不依赖
-Windows 消息循环的那几段算术是对的（它们错了用户就点不中按钮、或者按钮盖到系统按钮上）。
+Windows 消息循环的那几段算术是对的（它们错了用户就点不中按钮、或者按钮盖到系统按钮上），
+以及「哪件事只该做一次」这类调度判断。
 """
 
 import pytest
@@ -98,6 +99,50 @@ def test_shutdown_cancels_and_forgets_every_bar(no_threads):
     winbar.shutdown()
     assert winbar._bars == {}
     assert all(b.cancelled for b in bars)
+
+
+@pytest.fixture(autouse=True)
+def _clean_style_state():
+    """主窗口的染色记录也是模块级状态，不清干净会串到下一个用例。"""
+    winbar._styled_hwnd = None
+    winbar._styled_theme = None
+    yield
+    winbar._styled_hwnd = None
+    winbar._styled_theme = None
+
+
+class _FakeTime:
+    def sleep(self, _seconds):
+        pass
+
+
+class _FakeWindowApi:
+    def IsWindow(self, _hwnd):
+        return True
+
+
+def test_theme_switch_skips_window_chrome(monkeypatch):
+    """切主题只该改 DWM 配色。
+
+    「去图标 + 加无图标标记」要重算窗口边框，会把整块窗口（含里面的网页）重画一遍 ——
+    启动时做一次没问题，但切主题要是也跟着做，用户就会看见窗口闪一下。
+    """
+    calls = []
+    monkeypatch.setattr(winbar, "_ensure_api", lambda: None)
+    monkeypatch.setattr(winbar, "_set_thread_dpi", lambda: None)
+    monkeypatch.setattr(winbar, "_wait_main_window", lambda timeout=30: 100)
+    monkeypatch.setattr(winbar, "time", _FakeTime())
+    monkeypatch.setattr(winbar, "_user32", _FakeWindowApi())
+    monkeypatch.setattr(winbar, "_style_main_frame",
+                        lambda hwnd, theme, chrome=True: calls.append((hwnd, theme, chrome)))
+
+    winbar._run_main_style("light")     # 启动：重活 + 染色
+    winbar._run_main_style("dark")      # 切主题：只染色
+    winbar._run_main_style("dark")      # 同一套主题再来一次：什么都不用做
+
+    assert calls == [(100, "light", True),      # 窗口刚出现
+                     (100, "light", True),      # WinForms 安定后的补染（重活仍要做一次）
+                     (100, "dark", False)]      # 换主题：不碰窗口结构
 
 
 def test_btn_at_hits_the_pin_button():

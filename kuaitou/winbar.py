@@ -501,31 +501,47 @@ _MAIN_THEME = {
 # 主窗口显示之后再补染一次的等待时长：太短了 WinForms 还没刷完，太长了用户能看见跳变。
 _MAIN_SETTLE = 1.2
 
+# 已经处理过的窗口，以及上次染上去的主题。
+# 「去图标 + 加无图标标记」是重活：标记加上去之后得靠 SWP_FRAMECHANGED 让系统重算窗口
+# 边框，而那个动作会把整块窗口（包括里面的网页）重画一遍。启动时做一次无所谓，
+# 但每次切主题都跟着做，用户就会看见窗口闪一下——所以这里记下来，只在第一次做。
+_styled_hwnd = None
+_styled_theme = None
+_style_lock = threading.Lock()
 
-def style_main_window(theme="dark"):
+
+def style_main_window(theme="light"):
     """按主题给主窗口的标题栏上色（后台线程，不阻塞调用方）。
 
     主窗口可能在 webview.start() 之后才出现，所以这里自己等窗口，调用点随便什么时候调都行。
-    切换主题时再调一次即可，重复调用是幂等的。
+    切换主题时再调一次即可：去图标那种重活只干一次，之后只更新 DWM 的配色。
     """
     threading.Thread(target=_run_main_style, args=(str(theme),),
                      name="main-titlebar", daemon=True).start()
 
 
 def _run_main_style(theme):
+    global _styled_hwnd, _styled_theme
     try:
         _ensure_api()
         _set_thread_dpi()
         hwnd = _wait_main_window()
         if not hwnd:
             return
-        _style_main_frame(hwnd, theme)
+        with _style_lock:
+            chrome = _styled_hwnd != hwnd           # 这个窗口还没去过图标
+            if not chrome and _styled_theme == theme:
+                return                              # 同一个窗口、同一套主题：无事可做
+            _styled_hwnd, _styled_theme = hwnd, theme
+        _style_main_frame(hwnd, theme, chrome)
         # 窗口刚显示出来时 pywebview 底下的 WinForms 还会把图标和非客户区再刷一遍，
-        # 紧跟着染的那次会被顶回去（实测标题栏又变回系统默认色、图标也回来了）。
-        # 等它安定下来补一次；幂等，重复调用无害。
-        time.sleep(_MAIN_SETTLE)
-        if _user32.IsWindow(hwnd):
-            _style_main_frame(hwnd, theme)
+        # 紧跟着染的那次会被顶回去（实测标题栏又变回系统默认色、图标也回来了），
+        # 所以等它安定下来补一次。只有窗口第一次出现才需要：切主题也走这条路径，
+        # 每次都补的话用户会在切完一秒后又看见窗口闪一下。
+        if chrome:
+            time.sleep(_MAIN_SETTLE)
+            if _user32.IsWindow(hwnd):
+                _style_main_frame(hwnd, theme, True)
     except Exception as e:
         _log("主窗口标题栏处理失败：%r" % (e,))
 
@@ -553,26 +569,32 @@ def _wait_main_window(timeout=30):
     return fallback
 
 
-def _style_main_frame(hwnd, theme):
-    caption, border, dark = _MAIN_THEME.get(theme, _MAIN_THEME["dark"])
-    # 去掉标题栏图标：WS_EX_DLGMODALFRAME 是系统「这个窗口不显示图标」的标记，
-    # 加上后必须让窗口重算一次边框（SWP_FRAMECHANGED）才生效。
-    try:
-        ex = _user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-        _user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex | _WS_EX_DLGMODALFRAME)
-        _user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
-                             _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER |
-                             _SWP_NOACTIVATE | _SWP_FRAMECHANGED)
-    except Exception as e:
-        _log("去掉主窗口标题栏图标失败：%r" % (e,))
-    # Win11 光靠上面那个标记还不够：实测图标照旧画着，还得把窗口的图标本身清掉
-    # （只清小图标也没用，标题栏会回落到大图标）。清空后任务栏 / Alt+Tab 会用 exe 自带
-    # 的图标顶上，而那也是快投自己的图标，观感不变。
-    try:
-        for kind in (_ICON_SMALL, _ICON_BIG):
-            _user32.SendMessageW(hwnd, _WM_SETICON, kind, 0)
-    except Exception as e:
-        _log("清空主窗口图标失败：%r" % (e,))
+def _style_main_frame(hwnd, theme, chrome=True):
+    """把主题刷到主窗口上。
+
+    chrome=True 才动窗口样式与图标——那部分要重算窗口边框，会连网页一起重画，
+    所以只在窗口第一次出现时做；之后换主题只改 DWM 的几个颜色，不碰窗口结构。
+    """
+    caption, border, dark = _MAIN_THEME.get(theme, _MAIN_THEME["light"])
+    if chrome:
+        # 去掉标题栏图标：WS_EX_DLGMODALFRAME 是系统「这个窗口不显示图标」的标记，
+        # 加上后必须让窗口重算一次边框（SWP_FRAMECHANGED）才生效。
+        try:
+            ex = _user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+            _user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex | _WS_EX_DLGMODALFRAME)
+            _user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                                 _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER |
+                                 _SWP_NOACTIVATE | _SWP_FRAMECHANGED)
+        except Exception as e:
+            _log("去掉主窗口标题栏图标失败：%r" % (e,))
+        # Win11 光靠上面那个标记还不够：实测图标照旧画着，还得把窗口的图标本身清掉
+        # （只清小图标也没用，标题栏会回落到大图标）。清空后任务栏 / Alt+Tab 会用 exe 自带
+        # 的图标顶上，而那也是快投自己的图标，观感不变。
+        try:
+            for kind in (_ICON_SMALL, _ICON_BIG):
+                _user32.SendMessageW(hwnd, _WM_SETICON, kind, 0)
+        except Exception as e:
+            _log("清空主窗口图标失败：%r" % (e,))
     if _dwmapi is None:
         return
     want = ((_DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0, "深色模式"),

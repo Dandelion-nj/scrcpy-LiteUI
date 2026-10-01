@@ -1,5 +1,9 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+<!-- 默认浅色：令牌直接写在上面的 :root 里，所以这里不带 data-theme 就是浅色。
+     用户选了深色时，由服务端在发出页面前把 data-theme="dark" 加到这个 <html> 上
+     （见 web.py 的 do_GET），首屏就是对的颜色 —— 不会先按默认色画一帧、等第一个
+     /api/status 回来才翻成深色，那一下就是「切完主题重开应用时闪一下」的来源。 -->
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,46 +11,18 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* 深色是默认主题；浅色在下面用 [data-theme="light"] 覆盖同一组变量。
+/* 浅色是默认主题，令牌直接写在 :root 上；深色在下面用 [data-theme="dark"] 覆盖同一组。
+   这样「没有任何 data-theme」时就是浅色，首屏用不着等脚本或配置就能画对。
    两套主题共用同一套语义令牌（底色 / 卡片 / 边框 / 文字 / 强调色 + 阴影 + 动效曲线），
    改一处两套都对；阴影与曲线也一起给，保证两套主题的层次感和手感是同一种脾气。 */
 :root {
-  color-scheme: dark;
-  --bg: #0b0e14;              /* 最底层背景 */
-  --bg-elev: #10141c;         /* 侧边栏这类抬起一层 */
-  --card: #151a23;
-  --card-hover: #1d2330;
-  --border: #242b38;
-  --border-strong: #333d4e;   /* 悬停 / 聚焦时加深的描边 */
-  --text: #eef1f7;
-  --text-dim: #8b93a7;
-  --accent: #4c8dff;
-  --accent-hover: #6ba0ff;
-  --accent-soft: rgba(76, 141, 255, 0.16);
-  --green: #2ecc9b;
-  --warn: #e7b155;
-  --red: #f2555a;
-  --mark-bg: rgba(76, 141, 255, 0.32);
-  --mark-fg: #a8c8ff;
-  --radius: 12px;
-  --radius-sm: 8px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
-  --shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.34);
-  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.5), 0 28px 64px rgba(0, 0, 0, 0.46);
-  --hairline: rgba(255, 255, 255, 0.05);   /* 卡片顶部那一道高光 */
-  --t-fast: 0.14s cubic-bezier(0.3, 0.7, 0.4, 1);
-  --t: 0.24s cubic-bezier(0.2, 0.75, 0.3, 1);
-  --t-slow: 0.42s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-[data-theme="light"] {
   color-scheme: light;
-  --bg: #eaeef5;
-  --bg-elev: #f6f8fc;
+  --bg: #eaeef5;              /* 最底层背景 */
+  --bg-elev: #f6f8fc;         /* 侧边栏这类抬起一层 */
   --card: #ffffff;
   --card-hover: #f1f4fa;
   --border: #dfe4ee;
-  --border-strong: #c6d0e0;
+  --border-strong: #c6d0e0;   /* 悬停 / 聚焦时加深的描边 */
   --text: #10141c;
   --text-dim: #66708a;
   --accent: #2563eb;
@@ -57,10 +33,39 @@
   --red: #dc2626;
   --mark-bg: rgba(37, 99, 235, 0.16);
   --mark-fg: #1d4ed8;
+  --radius: 12px;
+  --radius-sm: 8px;
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow: 0 2px 6px rgba(16, 24, 40, 0.06), 0 12px 28px rgba(16, 24, 40, 0.1);
   --shadow-lg: 0 6px 16px rgba(16, 24, 40, 0.08), 0 28px 60px rgba(16, 24, 40, 0.16);
-  --hairline: rgba(255, 255, 255, 0.9);
+  --hairline: rgba(255, 255, 255, 0.9);    /* 卡片顶部那一道高光 */
+  --t-fast: 0.14s cubic-bezier(0.3, 0.7, 0.4, 1);
+  --t: 0.24s cubic-bezier(0.2, 0.75, 0.3, 1);
+  --t-slow: 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0e14;
+  --bg-elev: #10141c;
+  --card: #151a23;
+  --card-hover: #1d2330;
+  --border: #242b38;
+  --border-strong: #333d4e;
+  --text: #eef1f7;
+  --text-dim: #8b93a7;
+  --accent: #4c8dff;
+  --accent-hover: #6ba0ff;
+  --accent-soft: rgba(76, 141, 255, 0.16);
+  --green: #2ecc9b;
+  --warn: #e7b155;
+  --red: #f2555a;
+  --mark-bg: rgba(76, 141, 255, 0.32);
+  --mark-fg: #a8c8ff;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.5), 0 28px 64px rgba(0, 0, 0, 0.46);
+  --hairline: rgba(255, 255, 255, 0.05);
 }
 
 html, body { height: 100%; overflow: hidden; }
@@ -1028,7 +1033,7 @@ mark {
         <div class="settings-item">
           <div>
             <div class="settings-item-title">浅色主题</div>
-            <div class="settings-item-desc">开启后整个界面换成浅色；主窗口标题栏会跟着换成同色，并且不显示图标与标题文字。默认深色。</div>
+            <div class="settings-item-desc">开启后整个界面换成浅色；主窗口标题栏会跟着换成同色，并且不显示图标与标题文字。默认浅色。</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="light_theme" onchange="saveTheme(this.checked)">
