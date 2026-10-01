@@ -19,6 +19,7 @@ import urllib.request
 
 import webview
 
+from . import winbar
 from .apps import (
     _app_name,
     auto_sync_icons,
@@ -329,6 +330,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             save_config(body)
             if 'minimize_to_tray' in body or 'autostart' in body:
                 _tray_sync()          # 开关一变就启停托盘图标
+            if 'theme' in body:
+                winbar.style_main_window(body.get('theme'))   # 标题栏跟着主题换色
             resp = {"ok": True}
             if 'autostart' in body:
                 resp["autostart"] = _apply_autostart(bool(body['autostart']))

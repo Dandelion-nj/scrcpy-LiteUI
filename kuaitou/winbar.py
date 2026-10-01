@@ -60,9 +60,12 @@ _WS_CAPTION = 0x00C00000
 _GWL_STYLE = -16
 _WS_EX_TOOLWINDOW, _WS_EX_NOACTIVATE = 0x00000080, 0x08000000
 _WS_EX_LAYERED = 0x00080000
+_WS_EX_DLGMODALFRAME = 0x00000001
 _LWA_COLORKEY = 0x00000001
 _SWP_NOSIZE, _SWP_NOMOVE = 0x0001, 0x0002
 _SWP_NOZORDER, _SWP_NOACTIVATE = 0x0004, 0x0010
+_SWP_FRAMECHANGED = 0x0020
+_GWL_EXSTYLE = -20
 _HWND_TOPMOST, _HWND_NOTOPMOST = -1, -2
 _SW_HIDE, _SW_SHOWNOACTIVATE = 0, 4
 _WM_PAINT, _WM_TIMER, _WM_CLOSE = 0x000F, 0x0113, 0x0010
@@ -158,6 +161,8 @@ def _ensure_api():
         for name, res, args in (
                 ("GetWindowRect", wintypes.BOOL, (_H, _H)),
                 ("GetWindowLongW", ctypes.c_long, (_H, ctypes.c_int)),
+                ("SetWindowLongW", ctypes.c_long, (_H, ctypes.c_int, ctypes.c_long)),
+                ("FindWindowW", _H, (wintypes.LPCWSTR, wintypes.LPCWSTR)),
                 ("GetCursorPos", wintypes.BOOL, (_H,)),
                 ("GetWindowThreadProcessId", wintypes.DWORD, (_H, _H)),
                 ("EnumWindows", wintypes.BOOL, (_H, wintypes.LPARAM)),
@@ -478,6 +483,112 @@ def _style_frame(hwnd):
                      % (name, hr & 0xFFFFFFFF))
         except Exception as e:
             _log("DWM %s 异常：%r" % (name, e))
+
+
+# ---------- 主窗口标题栏：染色 + 去图标与标题，做出「类似无边框」的观感 ----------
+# 主窗口是 pywebview 自己建的（WinForms + WebView2，同进程），这里只在外围改它的非客户区：
+# 标题栏与界面同色、没有图标也没有「快投」几个字，只剩最小化/最大化/关闭和一圈主题色边框。
+# 窗口标题文字保持「快投」不动（只是染成看不见），入口里靠标题找窗口的单实例唤起不能失效。
+_MAIN_TITLE = "快投"
+
+# (标题栏底色, 边框色, 是否深色)，与 index.html 的 CSS 变量一一对应；
+# 标题文字色故意取和底色一样——DWM 没有「隐藏标题」的开关，染成底色就等于看不见。
+_MAIN_THEME = {
+    "dark": ((0x1a, 0x1d, 0x24), (0x2b, 0x2f, 0x3a), 1),
+    "light": ((0xff, 0xff, 0xff), (0xdd, 0xe1, 0xe8), 0),
+}
+
+# 主窗口显示之后再补染一次的等待时长：太短了 WinForms 还没刷完，太长了用户能看见跳变。
+_MAIN_SETTLE = 1.2
+
+
+def style_main_window(theme="dark"):
+    """按主题给主窗口的标题栏上色（后台线程，不阻塞调用方）。
+
+    主窗口可能在 webview.start() 之后才出现，所以这里自己等窗口，调用点随便什么时候调都行。
+    切换主题时再调一次即可，重复调用是幂等的。
+    """
+    threading.Thread(target=_run_main_style, args=(str(theme),),
+                     name="main-titlebar", daemon=True).start()
+
+
+def _run_main_style(theme):
+    try:
+        _ensure_api()
+        _set_thread_dpi()
+        hwnd = _wait_main_window()
+        if not hwnd:
+            return
+        _style_main_frame(hwnd, theme)
+        # 窗口刚显示出来时 pywebview 底下的 WinForms 还会把图标和非客户区再刷一遍，
+        # 紧跟着染的那次会被顶回去（实测标题栏又变回系统默认色、图标也回来了）。
+        # 等它安定下来补一次；幂等，重复调用无害。
+        time.sleep(_MAIN_SETTLE)
+        if _user32.IsWindow(hwnd):
+            _style_main_frame(hwnd, theme)
+    except Exception as e:
+        _log("主窗口标题栏处理失败：%r" % (e,))
+
+
+def _wait_main_window(timeout=30):
+    """等主窗口出现：标题是「快投」，再核对窗口属于本进程，免得误改别的同名窗口。
+
+    优先等它真正显示出来（WinForms 显示之后还会再刷一次窗口样式，太早染会被顶掉）；
+    静默启动时窗口一直藏着，那就退而求其次先把当前句柄处理掉。
+    """
+    mypid = os.getpid()
+    deadline = time.time() + timeout
+    fallback = None
+    while time.time() < deadline:
+        hwnd = _user32.FindWindowW(None, _MAIN_TITLE)
+        if hwnd:
+            pid = wintypes.DWORD()
+            _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == mypid:
+                if _user32.IsWindowVisible(hwnd):
+                    return hwnd
+                if fallback is None:
+                    fallback = hwnd
+        time.sleep(0.2)
+    return fallback
+
+
+def _style_main_frame(hwnd, theme):
+    caption, border, dark = _MAIN_THEME.get(theme, _MAIN_THEME["dark"])
+    # 去掉标题栏图标：WS_EX_DLGMODALFRAME 是系统「这个窗口不显示图标」的标记，
+    # 加上后必须让窗口重算一次边框（SWP_FRAMECHANGED）才生效。
+    try:
+        ex = _user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+        _user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, ex | _WS_EX_DLGMODALFRAME)
+        _user32.SetWindowPos(hwnd, None, 0, 0, 0, 0,
+                             _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOZORDER |
+                             _SWP_NOACTIVATE | _SWP_FRAMECHANGED)
+    except Exception as e:
+        _log("去掉主窗口标题栏图标失败：%r" % (e,))
+    # Win11 光靠上面那个标记还不够：实测图标照旧画着，还得把窗口的图标本身清掉
+    # （只清小图标也没用，标题栏会回落到大图标）。清空后任务栏 / Alt+Tab 会用 exe 自带
+    # 的图标顶上，而那也是快投自己的图标，观感不变。
+    try:
+        for kind in (_ICON_SMALL, _ICON_BIG):
+            _user32.SendMessageW(hwnd, _WM_SETICON, kind, 0)
+    except Exception as e:
+        _log("清空主窗口图标失败：%r" % (e,))
+    if _dwmapi is None:
+        return
+    want = ((_DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0, "深色模式"),
+            (_DWMWA_CAPTION_COLOR, _rgb(*caption), "标题栏底色"),
+            (_DWMWA_TEXT_COLOR, _rgb(*caption), "标题文字"),
+            (_DWMWA_BORDER_COLOR, _rgb(*border), "边框"),
+            (_DWMWA_WINDOW_CORNER_PREFERENCE, 2, "圆角"))       # 2 = DWMWCP_ROUND
+    for attr, val, name in want:
+        v = ctypes.c_int(val)
+        try:
+            hr = _dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), 4)
+            if hr != 0:
+                _log("主窗口 DWM %s 失败 hr=0x%08X（系统版本可能不支持，不影响使用）"
+                     % (name, hr & 0xFFFFFFFF))
+        except Exception as e:
+            _log("主窗口 DWM %s 异常：%r" % (name, e))
 
 
 # ---------- 叠加窗口 ----------

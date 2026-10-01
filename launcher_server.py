@@ -18,7 +18,8 @@ import threading
 
 import webview
 
-from kuaitou import device, system
+from kuaitou import device, system, winbar
+from kuaitou.storage import load_config
 
 # 入口是组装点，直接引用各模块的私有名接线（对外暴露反而多一层无意义的包装）
 from kuaitou.system import (
@@ -117,6 +118,9 @@ def _run():
         js_api=Api()            # 暴露原生「另存为」对话框给前端
     )
     system.set_window(window)
+    # 标题栏跟界面主题同色，并去掉图标与标题文字（类似无边框）；窗口要等一会儿才出来，
+    # 这里塞后台线程自己等，不阻塞启动。切换主题时由 /api/config 再调一次。
+    winbar.style_main_window(load_config().get("theme", "dark"))
 
     def on_closing():
         # 开了"缩小到托盘"（或本次是静默自启）且不是从托盘选的"退出应用"：点关闭只把

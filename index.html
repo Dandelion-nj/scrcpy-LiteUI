@@ -7,70 +7,257 @@
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* 深色是默认主题；浅色在下面用 [data-theme="light"] 覆盖同一组变量。
+   两套主题共用同一套语义令牌（底色 / 卡片 / 边框 / 文字 / 强调色 + 阴影 + 动效曲线），
+   改一处两套都对；阴影与曲线也一起给，保证两套主题的层次感和手感是同一种脾气。 */
 :root {
-  --bg: #0f1115;
-  --card: #1a1d24;
-  --card-hover: #232730;
-  --border: #2b2f3a;
-  --text: #f5f6f8;
-  --text-dim: #8b90a0;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --green: #10b981;
-  --warn: #f59e0b;
-  --red: #ef4444;
-  --radius: 10px;
+  color-scheme: dark;
+  --bg: #0b0e14;              /* 最底层背景 */
+  --bg-elev: #10141c;         /* 侧边栏这类抬起一层 */
+  --card: #151a23;
+  --card-hover: #1d2330;
+  --border: #242b38;
+  --border-strong: #333d4e;   /* 悬停 / 聚焦时加深的描边 */
+  --text: #eef1f7;
+  --text-dim: #8b93a7;
+  --accent: #4c8dff;
+  --accent-hover: #6ba0ff;
+  --accent-soft: rgba(76, 141, 255, 0.16);
+  --green: #2ecc9b;
+  --warn: #e7b155;
+  --red: #f2555a;
+  --mark-bg: rgba(76, 141, 255, 0.32);
+  --mark-fg: #a8c8ff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow: 0 2px 6px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.34);
+  --shadow-lg: 0 6px 16px rgba(0, 0, 0, 0.5), 0 28px 64px rgba(0, 0, 0, 0.46);
+  --hairline: rgba(255, 255, 255, 0.05);   /* 卡片顶部那一道高光 */
+  --t-fast: 0.14s cubic-bezier(0.3, 0.7, 0.4, 1);
+  --t: 0.24s cubic-bezier(0.2, 0.75, 0.3, 1);
+  --t-slow: 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eaeef5;
+  --bg-elev: #f6f8fc;
+  --card: #ffffff;
+  --card-hover: #f1f4fa;
+  --border: #dfe4ee;
+  --border-strong: #c6d0e0;
+  --text: #10141c;
+  --text-dim: #66708a;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: rgba(37, 99, 235, 0.1);
+  --green: #0f9d76;
+  --warn: #b7791f;
+  --red: #dc2626;
+  --mark-bg: rgba(37, 99, 235, 0.16);
+  --mark-fg: #1d4ed8;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow: 0 2px 6px rgba(16, 24, 40, 0.06), 0 12px 28px rgba(16, 24, 40, 0.1);
+  --shadow-lg: 0 6px 16px rgba(16, 24, 40, 0.08), 0 28px 60px rgba(16, 24, 40, 0.16);
+  --hairline: rgba(255, 255, 255, 0.9);
 }
 
 html, body { height: 100%; overflow: hidden; }
+/* 底色同时刷在 html 上：切主题要整页重绘，只刷 body 的话重绘间隙会漏出 WebView 的
+   默认白底，看起来就是闪一下白光 */
+html { background: var(--bg); }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", sans-serif;
   background: var(--bg);
+  /* 右上角一层很淡的强调色光晕：纯色背景显得平，加一点光让整页有纵深。
+     不用 background-attachment: fixed —— 页面本身不滚动，写死只会多一个合成层，
+     换色时那一层要重新栅格化，反而容易闪 */
+  background-image: radial-gradient(1100px 560px at 88% -12%, var(--accent-soft), transparent 62%);
   color: var(--text);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 切主题时临时挂上：见 applyTheme 的说明 —— 一次性换完全部令牌，不逐个补间 */
+html.no-anim, html.no-anim * { transition: none !important; animation: none !important; }
+
+/* 左右两栏：左边可折叠侧边栏，右边是主页 + 状态栏（设置页覆盖在右栏上） */
+.shell { display: flex; height: 100vh; }
+.content {
+  position: relative;          /* 设置页绝对定位的参照：只盖住右栏，侧边栏始终可见 */
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  font-size: 14px;
 }
 
-.topbar {
+/* ---------- 左侧边栏 ---------- */
+.sidebar {
+  width: 232px;
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width var(--t);
+}
+.sidebar.collapsed { width: 60px; }
+
+.sidebar-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-
-.topbar h1 {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.topbar-actions {
-  display: flex;
   gap: 8px;
+  padding: 16px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
+/* 应用名按「标题」来做：字号明显大于正文、字重更重，作为整个侧边栏的视觉锚点 */
+.app-title {
+  flex: 1;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.15;
+  white-space: nowrap;
+  cursor: pointer;
+  overflow: hidden;
+  background: linear-gradient(120deg, var(--text) 25%, var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  transition: opacity var(--t-fast);
+}
+.app-title:hover { opacity: 0.75; }
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.sidebar-toggle:hover { background: var(--card-hover); color: var(--text); }
+.sidebar-toggle svg { width: 16px; height: 16px; transition: transform var(--t); }
+.sidebar.collapsed .sidebar-toggle svg { transform: rotate(180deg); }
+
+.sidebar.collapsed .app-title { display: none; }
+.sidebar.collapsed .sidebar-top { justify-content: center; padding: 16px 0; }
+
+.sidebar-nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 10px;
+  gap: 4px;
+}
+.nav-group { display: flex; flex-direction: column; gap: 3px; }
+/* 设置类标签贴底：上面是设备列表（台数会变），设置固定压在下面不跟着动 */
+.nav-group-bottom { margin-top: auto; padding-top: 12px; }
+.nav-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.8px;
+  padding: 6px 10px 4px;
+}
+.sidebar.collapsed .nav-group-title { display: none; }
+.sidebar.collapsed .nav-group-bottom { border-top: 1px solid var(--border); margin-top: auto; }
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  overflow: hidden;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+/* 左侧那道短竖条：只标记当前页，平时高度为 0，切换时高度长出来 */
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+  transform: translateY(-50%);
+  transition: height var(--t);
+}
+.nav-item:hover { background: var(--card-hover); color: var(--text); }
+.nav-item.active { background: var(--accent-soft); color: var(--accent); }
+.nav-item.active::before { height: 18px; }
+.nav-ico { display: flex; flex-shrink: 0; }
+.nav-ico svg { width: 17px; height: 17px; }
+.nav-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 折叠态：文字全部收起，只留图标（图标本身就是标签） */
+.sidebar.collapsed .nav-text { display: none; }
+.sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar.collapsed .nav-item::before { display: none; }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   background: var(--card);
   border: 1px solid var(--border);
   color: var(--text);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 8px 14px;
   font-size: 13px;
+  font-family: inherit;
   cursor: pointer;
-  transition: all 0.15s;
+  /* 按钮文案永远一行：被同行的长说明挤压时，宁可自己去挤别人，也不从中间断开 */
+  white-space: nowrap;
+  /* 悬停时轻微抬起 + 描边加深 + 落一点阴影：按下再压回去，手感上有回弹 */
+  transition: background var(--t-fast), border-color var(--t-fast),
+              box-shadow var(--t-fast), transform var(--t-fast), color var(--t-fast);
 }
-.btn:hover { background: var(--card-hover); border-color: var(--accent); }
+.btn:hover {
+  background: var(--card-hover);
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+.btn:active { transform: translateY(0); box-shadow: none; }
+.btn:disabled { opacity: 0.5; cursor: default; transform: none; box-shadow: none; }
+.btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
+  background: linear-gradient(180deg, var(--accent), var(--accent-hover));
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 8px 20px var(--accent-soft);
 }
-.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:hover {
+  background: linear-gradient(180deg, var(--accent-hover), var(--accent-hover));
+  border-color: transparent;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 12px 26px var(--accent-soft);
+}
 
-/* 设置页：整页显示，顶部标签分类 */
+/* 设置页：整页覆盖右栏（侧边栏始终可见，切页由侧边栏承担，所以这里不再有标题行） */
 .settings-page {
   position: absolute;
   inset: 0;
@@ -79,49 +266,23 @@ body {
   display: none;
   flex-direction: column;
 }
-.settings-page.open { display: flex; }
-
-.settings-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-}
-.settings-header h2 { font-size: 17px; font-weight: 600; }
-.close-btn {
-  background: none; border: none; color: var(--text-dim);
-  font-size: 22px; cursor: pointer; padding: 0 4px;
-}
-.close-btn:hover { color: var(--text); }
-
-.settings-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.settings-tab-btn {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--text-dim);
-  padding: 10px 14px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-}
-.settings-tab-btn:hover { color: var(--text); }
-.settings-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.settings-page.open { display: flex; animation: pageIn var(--t) both; }
 
 .settings-content {
   flex: 1;
   overflow-y: auto;
-  padding: 20px;
+  padding: 24px 22px;
 }
 .tab-pane { display: none; }
-.tab-pane.active { display: block; }
+.tab-pane.active { display: block; animation: paneIn var(--t) both; }
+@keyframes paneIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes pageIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 /* 内容限宽居中：窗口拉宽时输入框不会被拉成一条，长文案也不会跨屏 */
 .tab-pane > * { max-width: 720px; margin-left: auto; margin-right: auto; }
 
@@ -135,39 +296,30 @@ body {
   border-top: 1px solid var(--border);
 }
 
-/* 主页设备标签页 */
-.device-tabs {
-  display: none;
-  gap: 6px;
-  padding: 8px 20px;
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  flex-shrink: 0;
-}
+/* 侧边栏里的设备入口：设备标签与主页标签合并，每台设备就是一个主页 */
+.device-tabs { display: none; flex-direction: column; gap: 3px; }
 .device-tabs.show { display: flex; }
-.device-tab {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 8px 6px 12px;
-  color: var(--text-dim);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s;
+.device-tab .dev-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.device-tab .dev-model {
+  font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.device-tab:hover { border-color: var(--accent); color: var(--text); }
-.device-tab.active { border-color: var(--accent); background: var(--card-hover); color: var(--text); }
-.device-tab .tab-model { font-weight: 600; }
-.device-tab .tab-addr { font-family: Consolas, ui-monospace, monospace; font-size: 11px; }
+.device-tab .dev-sub {
+  font-size: 11px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.device-tab.active .dev-sub { color: var(--accent); opacity: 0.85; }
 .device-tab .tab-close {
-  width: 16px; height: 16px; line-height: 15px; text-align: center;
-  border-radius: 50%; color: var(--text-dim); font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%;
+  color: var(--text-dim); flex-shrink: 0; opacity: 0;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
 }
+.device-tab .tab-close svg { width: 11px; height: 11px; }
+.device-tab:hover .tab-close { opacity: 1; }
 .device-tab .tab-close:hover { background: var(--red); color: #fff; }
+/* 折叠态：设备名/地址收起，只留手机图标（与设置标签一致） */
+.sidebar.collapsed .device-tab .dev-text { display: none; }
+.sidebar.collapsed .device-tab .tab-close { display: none; }
 
 /* 已连接设备列表（设置页） */
 .conn-list { display: flex; flex-direction: column; gap: 6px; }
@@ -222,9 +374,11 @@ body {
 .section {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 16px 18px;
   margin-bottom: 16px;
+  /* 顶部一道极淡高光 + 一点外阴影：卡片从背景里「浮」起来 */
+  box-shadow: inset 0 1px 0 var(--hairline), var(--shadow-sm);
 }
 .section-title {
   font-size: 12px;
@@ -327,13 +481,24 @@ details.section > summary {
   color: var(--text-dim); text-transform: uppercase;
 }
 details.section > summary::-webkit-details-marker { display: none; }
-details.section > summary::after { content: '▾'; font-size: 12px; transition: transform 0.2s; }
+/* 展开箭头：用两条边框拼一个 V，跟着展开状态翻转（不用字符，避免不同系统字形不一致） */
+details.section > summary::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 3px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform var(--t);
+}
 details.section > summary:hover { color: var(--text); }
 details.section[open] > summary { margin-bottom: 6px; }
-details.section[open] > summary::after { transform: rotate(180deg); }
+details.section[open] > summary::after { transform: rotate(-135deg); }
 
-/* 小号按钮：放在抽屉标题行等紧凑位置 */
-.btn-mini { padding: 4px 10px; font-size: 12px; border-radius: 6px; }
+/* 小号按钮：放在抽屉标题行等紧凑位置。
+   flex-shrink: 0 —— 这类按钮旁边常跟着一大段说明文字，不允许被压窄（「转无线」被压成两行就是这么来的） */
+.btn-mini { padding: 4px 10px; font-size: 12px; border-radius: 6px; flex-shrink: 0; }
 
 /* 诊断输出 */
 .diag-box {
@@ -354,25 +519,51 @@ details.section[open] > summary::after { transform: rotate(180deg); }
 }
 
 /* 主内容 */
+/* 主页：标题行与快捷启动栏钉在顶部，滚动只发生在下面的应用列表里 */
 .main {
   flex: 1;
+  min-height: 0;
   padding: 20px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.search-wrap { position: relative; margin-bottom: 20px; }
+/* 主页第一行：搜索框 + 三个功能键（设备名已移到侧边栏，这里不再重复显示） */
+.home-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.home-actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+.search-wrap { position: relative; flex: 1; min-width: 200px; }
+.search-ico {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.search-ico svg { width: 16px; height: 16px; }
 
 .search-box {
   width: 100%;
-  padding: 12px 40px 12px 16px;
+  padding: 12px 40px 12px 40px;
   font-size: 14px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   color: var(--text);
   outline: none;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
 }
-.search-box:focus { border-color: var(--accent); }
+.search-box:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 .search-clear {
   position: absolute;
@@ -392,13 +583,15 @@ details.section[open] > summary::after { transform: rotate(180deg); }
   align-items: center;
   justify-content: center;
   padding: 0;
+  transition: background var(--t-fast), color var(--t-fast);
 }
+.search-clear svg { width: 12px; height: 12px; }
 .search-clear.show { display: flex; }
 .search-clear:hover { background: var(--accent); color: #fff; }
 
 mark {
-  background: rgba(59, 130, 246, 0.35);
-  color: #93c5fd;
+  background: var(--mark-bg);
+  color: var(--mark-fg);
   border-radius: 3px;
   padding: 0 1px;
 }
@@ -421,16 +614,18 @@ mark {
   position: relative;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius);
   padding: 18px 10px;
   text-align: center;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background var(--t-fast), border-color var(--t-fast),
+              box-shadow var(--t), transform var(--t);
 }
 .app-item:hover {
   background: var(--card-hover);
-  border-color: var(--accent);
-  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow);
 }
 
 .app-icon {
@@ -483,7 +678,7 @@ mark {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: rgba(59, 130, 246, 0.92);
+  background: var(--accent);
   color: #fff;
   font-size: 13px;
   line-height: 1;
@@ -492,17 +687,19 @@ mark {
   justify-content: center;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, background 0.15s;
+  transition: opacity var(--t-fast), background var(--t-fast), transform var(--t-fast);
   z-index: 2;
 }
+.app-add svg { width: 12px; height: 12px; }
 .app-item:hover .app-add { opacity: 1; }
-.app-add.on { opacity: 1; background: rgba(16, 185, 129, 0.92); }
+.app-add:hover { transform: scale(1.12); }
+.app-add.on { opacity: 1; background: var(--green); }
 .app-add.on:hover { background: var(--red); }
-.app-add.quick { background: rgba(139, 144, 160, 0.55); }
+.app-add.quick { background: rgba(139, 147, 167, 0.55); }
 .app-add.quick:hover { background: var(--red); }
 
-/* 快捷启动区 */
-.quick-section { margin-bottom: 18px; }
+/* 快捷启动区：跟标题行一起钉在顶部，不参与滚动 */
+.quick-section { margin-bottom: 18px; flex-shrink: 0; }
 
 .section-head {
   display: flex;
@@ -538,7 +735,16 @@ mark {
   text-align: center;
 }
 
-/* 应用列表抽屉 */
+/* 应用列表抽屉：占满主页剩下的高度，列表超出时由 .drawer-body 自己滚，
+   标题行和快捷启动栏因此始终留在原地 */
+.drawer {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.drawer.collapsed { flex: 0 0 auto; }   /* 收起时不用撑满，贴着标题行就行 */
+
 .drawer-head {
   display: flex;
   align-items: center;
@@ -546,17 +752,18 @@ mark {
   padding: 9px 12px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   cursor: pointer;
   user-select: none;
-  transition: background 0.15s;
+  transition: background var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
 }
-.drawer-head:hover { background: var(--card-hover); border-color: var(--accent); }
+.drawer-head:hover { background: var(--card-hover); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
 .drawer-title { font-size: 13px; font-weight: 600; }
 .drawer-count { flex: 1; font-size: 12px; color: var(--text-dim); }
-.drawer-chevron { font-size: 12px; color: var(--text-dim); transition: transform 0.2s; }
+.drawer-chevron { display: flex; color: var(--text-dim); transition: transform var(--t); }
+.drawer-chevron svg { width: 14px; height: 14px; }
 .drawer.collapsed .drawer-chevron { transform: rotate(-90deg); }
-.drawer-body { padding-top: 14px; }
+.drawer-body { flex: 1; min-height: 0; overflow-y: auto; padding-top: 14px; }
 .drawer.collapsed .drawer-body { display: none; }
 
 /* 底部状态栏 */
@@ -575,44 +782,66 @@ mark {
 .dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-dim);
+  transition: background var(--t), box-shadow var(--t);
 }
 .dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .dot.offline { background: var(--red); }
-/* 等待授权 / 设备离线：正在处理中，不是失败 */
-.dot.pending { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+/* 等待授权 / 设备离线：正在处理中，不是失败 —— 呼吸灯提示「还在忙」 */
+.dot.pending { background: var(--warn); box-shadow: 0 0 8px var(--warn); animation: dotPulse 1.6s ease-in-out infinite; }
+@keyframes dotPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); background-clip: content-box; }
 </style>
 </head>
 <body>
 
-<div class="topbar">
-  <h1>快投</h1>
-  <div class="topbar-actions">
-    <button class="btn" onclick="launchDesktop()">🖥 镜像桌面</button>
-    <button class="btn" id="unlockBtn" onclick="unlockNow()" style="display:none">🔓 解锁</button>
-    <button class="btn" id="screenOffBtn" onclick="screenOff()" style="display:none">📴 关闭物理屏幕</button>
-    <button class="btn" onclick="toggleSettings()">⚙ 设置</button>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-top">
+    <span class="app-title" onclick="showHome()" title="回到设备主页">快投</span>
+    <button class="sidebar-toggle" id="sidebarToggle" onclick="toggleSidebar()" title="折叠 / 展开侧边栏">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
   </div>
-</div>
+  <nav class="sidebar-nav">
+    <!-- 设备标签与主页标签已合并：每台设备就是一个主页入口，点它切到该设备的应用页 -->
+    <div class="nav-group" id="navDeviceGroup" style="display:none">
+      <div class="nav-group-title">设备</div>
+      <div class="device-tabs" id="deviceTabs"></div>
+    </div>
+    <!-- 设置类标签统一压到侧栏底部，不随设备数量增减上下浮动 -->
+    <div class="nav-group nav-group-bottom">
+      <div class="nav-group-title">设置</div>
+      <button class="nav-item" data-nav="conn" onclick="openSettings('conn')" title="设备与连接">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+        <span class="nav-text">设备与连接</span>
+      </button>
+      <button class="nav-item" data-nav="screen" onclick="openSettings('screen')" title="画面与声音">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
+        <span class="nav-text">画面与声音</span>
+      </button>
+      <button class="nav-item" data-nav="general" onclick="openSettings('general')" title="常规">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+        <span class="nav-text">常规</span>
+      </button>
+      <button class="nav-item" data-nav="diag" onclick="openSettings('diag')" title="诊断">
+        <span class="nav-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+        <span class="nav-text">诊断</span>
+      </button>
+    </div>
+  </nav>
+</aside>
 
-<div class="device-tabs" id="deviceTabs"></div>
-
+<div class="content">
 <div class="settings-page" id="settingsPage">
-  <div class="settings-header">
-    <h2>设置</h2>
-    <button class="close-btn" onclick="toggleSettings()">×</button>
-  </div>
-
-  <div class="settings-tabs">
-    <button class="settings-tab-btn active" data-tab="conn" onclick="setSettingsTab('conn')">设备与连接</button>
-    <button class="settings-tab-btn" data-tab="screen" onclick="setSettingsTab('screen')">画面与声音</button>
-    <button class="settings-tab-btn" data-tab="general" onclick="setSettingsTab('general')">常规</button>
-    <button class="settings-tab-btn" data-tab="diag" onclick="setSettingsTab('diag')">诊断</button>
-  </div>
-
   <div class="settings-content">
 
     <div class="tab-pane active" id="pane-conn">
@@ -639,7 +868,7 @@ mark {
 
       <div class="section">
         <div class="section-title">添加设备</div>
-        <button class="btn btn-primary" style="width:100%" id="qrBtn" onclick="startQr()">📱 扫码连接（推荐）</button>
+        <button class="btn btn-primary" style="width:100%" id="qrBtn" onclick="startQr()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM21 14v7h-7"/></svg> 扫码连接（推荐）</button>
         <div id="qrPanel" style="display:none">
           <div class="qr-box" id="qrBox"></div>
           <div class="qr-sub" id="qrSub"></div>
@@ -647,8 +876,8 @@ mark {
         <div class="scan-hint" id="qrHint">手机（Android 11+）：设置 → 开发者选项 → 无线调试 → 使用二维码配对设备，扫描这里出现的二维码。</div>
         <div class="sub-divider"></div>
         <div class="row-2">
-          <button class="btn" id="scanBtn" onclick="discover()">🔍 扫描局域网</button>
-          <button class="btn" id="deepBtn" onclick="deepDiscover()">🧭 深度搜索</button>
+          <button class="btn" id="scanBtn" onclick="discover()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7.5"/><line x1="21" y1="21" x2="16.8" y2="16.8"/></svg> 扫描局域网</button>
+          <button class="btn" id="deepBtn" onclick="deepDiscover()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><polygon points="16.2 7.8 14.1 14.1 7.8 16.2 9.9 9.9 16.2 7.8"/></svg> 深度搜索</button>
         </div>
         <div class="scan-hint" id="scanHint">「扫描」查同网段 5555 端口；「深度搜索」= 局域网 + mDNS + 端口扫描（30000~50000，多线程），能发现跨网段 / 随机端口的设备，较慢但最全（搜索中再点一下可随时停止）。插上数据线会自动用 USB 有线。</div>
         <div class="scan-list" id="scanList"></div>
@@ -687,7 +916,7 @@ mark {
 
       <div class="section">
         <div class="section-title">锁屏解锁</div>
-        <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码再点「保存」（点「清除」则不再为这台手机提供解锁），之后点顶栏该设备旁边的「🔓 解锁」，程序会在后台点亮屏幕、静默上滑并输入密码。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
+        <div class="section-desc">手机锁着时投出来的只有锁屏画面。在这里按手机分别填好锁屏密码再点「保存」（点「清除」则不再为这台手机提供解锁），之后点主页右上角的「解锁」，程序会在后台点亮屏幕、静默上滑并输入密码。密码按手机的硬件序列号归档，同一台手机 USB 与无线通用。只支持数字 PIN / 字母数字密码，图案锁、指纹、人脸无法自动解锁。</div>
         <div class="pin-list" id="unlockList"></div>
       </div>
     </div>
@@ -785,10 +1014,24 @@ mark {
         <div class="settings-item">
           <div>
             <div class="settings-item-title">投屏窗口置顶</div>
-            <div class="settings-item-desc">投屏窗口始终压在其他窗口上面，适合一边看着手机画面一边在电脑上干别的；对「镜像应用」和「镜像桌面」都生效。窗口位置会被记住，下次投屏还开在原来的地方。投屏窗口的标题栏上还叠着一个 📌 置顶按钮，点它就能当场切换，不用回来改这里。</div>
+            <div class="settings-item-desc">投屏窗口始终压在其他窗口上面，适合一边看着手机画面一边在电脑上干别的；对「镜像应用」和「镜像桌面」都生效。窗口位置会被记住，下次投屏还开在原来的地方。投屏窗口的标题栏上还叠着一个置顶按钮，点它就能当场切换，不用回来改这里。</div>
           </div>
           <label class="switch">
             <input type="checkbox" id="always_on_top" onchange="saveAlwaysOnTop(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">外观</div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">浅色主题</div>
+            <div class="settings-item-desc">开启后整个界面换成浅色；主窗口标题栏会跟着换成同色，并且不显示图标与标题文字。默认深色。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="light_theme" onchange="saveTheme(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -813,13 +1056,13 @@ mark {
       <div class="section">
         <div class="section-title">诊断</div>
         <div class="row-2">
-          <button class="btn" onclick="runDiag(false)">🩺 环境自检</button>
-          <button class="btn" onclick="runDiag(true)">🧪 完整诊断</button>
+          <button class="btn" onclick="runDiag(false)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><polyline points="8 12.5 11 15.5 16 9.5"/></svg> 环境自检</button>
+          <button class="btn" onclick="runDiag(true)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> 完整诊断</button>
         </div>
         <div class="scan-hint">换电脑后「连得上 adb 却扫不出应用 / 投不出画面」时点这里。诊断完成后会弹出「另存为」对话框，由你自己选择报告的保存位置（取消则只在这里显示结果）。</div>
         <div class="row-2" style="margin-top: 10px">
-          <button class="btn" onclick="saveReport()">💾 保存诊断报告</button>
-          <button class="btn" onclick="exportLog()">📤 导出日志</button>
+          <button class="btn" onclick="saveReport()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> 保存诊断报告</button>
+          <button class="btn" onclick="exportLog()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> 导出日志</button>
         </div>
         <pre class="diag-box" id="diagBox" style="display:none"></pre>
       </div>
@@ -830,26 +1073,35 @@ mark {
 </div>
 
 <div class="main">
+  <!-- 第一行：搜索框 + 三个功能键（设备名在侧边栏，这里不再重复） -->
+  <div class="home-head">
+    <div class="search-wrap">
+      <span class="search-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7.5"/><line x1="21" y1="21" x2="16.8" y2="16.8"/></svg></span>
+      <input class="search-box" id="search" placeholder="搜索应用（支持拼音 / 首字母，如 wx、weixin）" oninput="filterApps()">
+      <button class="search-clear" id="searchClear" onclick="clearSearch()" title="清空 (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="home-actions">
+      <button class="btn" onclick="launchDesktop()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> 镜像桌面</button>
+      <button class="btn" id="unlockBtn" onclick="unlockNow()" style="display:none"></button>
+      <button class="btn" id="screenOffBtn" onclick="screenOff()" style="display:none"></button>
+    </div>
+  </div>
+
   <div class="quick-section">
     <div class="section-head">
       <span class="label">快捷启动</span>
       <span class="count" id="quickCount"></span>
     </div>
     <div class="quick-grid" id="quickGrid"></div>
-    <div class="quick-empty" id="quickEmpty">暂无快捷启动应用 — 鼠标移到应用卡片上，点右上角「＋」添加</div>
-  </div>
-
-  <div class="search-wrap">
-    <input class="search-box" id="search" placeholder="🔍 搜索应用（支持拼音 / 首字母，如 wx、weixin）" oninput="filterApps()">
-    <button class="search-clear" id="searchClear" onclick="clearSearch()" title="清空 (Esc)">×</button>
+    <div class="quick-empty" id="quickEmpty">暂无快捷启动应用 — 鼠标移到应用卡片上，点右上角的添加按钮即可加入</div>
   </div>
 
   <div class="drawer" id="appsDrawer">
     <div class="drawer-head" onclick="toggleDrawer()">
       <span class="drawer-title">全部应用</span>
       <span class="drawer-count" id="drawerCount"></span>
-      <button class="btn btn-mini" id="refreshBtn" onclick="refreshApps(event)" title="重新扫描当前设备的应用列表">↻ 刷新</button>
-      <span class="drawer-chevron">▾</span>
+      <button class="btn btn-mini" id="refreshBtn" onclick="refreshApps(event)" title="重新扫描当前设备的应用列表"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 4 21 10 15 10"/><polyline points="3 20 3 14 9 14"/><path d="M3.5 9a9 9 0 0 1 15-3.3L21 10M3 14l2.5 4.3A9 9 0 0 0 20.5 15"/></svg> 刷新</button>
+      <span class="drawer-chevron"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></span>
     </div>
     <div class="drawer-body">
       <div class="apps-grid" id="appsGrid"></div>
@@ -866,12 +1118,15 @@ mark {
   </div>
   <div id="appCount">0 个应用</div>
 </div>
+</div><!-- /.content -->
+</div><!-- /.shell -->
 
 <script>
 let allApps = [];              // 当前标签页设备的应用列表
 let appsLoadState = 'idle';    // idle | loading | done：保证自动扫描只触发一次，不会空转重扫
 let quickList = [];            // 当前设备的快捷启动包名，顺序即展示顺序
 let drawerCollapsed = false;   // 全部应用抽屉折叠状态
+const QUICK_MAX = 8;           // 每台设备快捷启动的上限，加满后要先移出一个才能再加
 
 // 多设备：每台设备一份独立上下文（应用列表按序列号缓存、各自快捷启动）
 let devices = [];              // [{serial, ip, port, model, connected}]
@@ -883,6 +1138,28 @@ let devKeyApplied = '';        // 设备/标签页渲染指纹，避免轮询时
 let presetKey = '';
 let pendingAddr = null;        // 已连通 TCP、正在等手机点「允许 USB 调试」的地址
 let pendingSince = 0;
+let settingsOpen = false;      // 右侧显示的是设备主页还是设置页
+let settingsTab = 'conn';      // 当前设置标签（设置页打开时用于高亮侧边栏）
+
+/* ---------- 内联 SVG 图标 ---------- */
+// 界面里一律用 SVG 画图标，不用 emoji：emoji 在不同系统上字形、颜色、大小都不一样，
+// 而 SVG 跟着 currentColor 走，主题一换自动变色，尺寸也完全可控。
+const _SVG_HEAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+                  ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+const SVG = {
+  search: _SVG_HEAD + '<circle cx="11" cy="11" r="7.5"/><line x1="21" y1="21" x2="16.8" y2="16.8"/></svg>',
+  refresh: _SVG_HEAD + '<polyline points="21 4 21 10 15 10"/><polyline points="3 20 3 14 9 14"/>' +
+           '<path d="M3.5 9a9 9 0 0 1 15-3.3L21 10M3 14l2.5 4.3A9 9 0 0 0 20.5 15"/></svg>',
+  plus: _SVG_HEAD + '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  check: _SVG_HEAD + '<polyline points="20 6 9 17 4 12"/></svg>',
+  close: _SVG_HEAD + '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
+  phone: _SVG_HEAD + '<rect x="6.5" y="2" width="11" height="20" rx="2.5"/><line x1="11" y1="18.5" x2="13" y2="18.5"/></svg>',
+  qr: _SVG_HEAD + '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM21 14v7h-7"/></svg>',
+  compass: _SVG_HEAD + '<circle cx="12" cy="12" r="9.5"/><polygon points="16.2 7.8 14.1 14.1 7.8 16.2 9.9 9.9 16.2 7.8"/></svg>',
+  monitor: _SVG_HEAD + '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
+  unlock: _SVG_HEAD + '<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>',
+  screenOff: _SVG_HEAD + '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="2" y1="2" x2="22" y2="22"/></svg>'
+};
 
 // ===== 搜索匹配（纯逻辑：拼音 / 首字母 / 多关键词 / 评分 / 高亮区间）=====
 const PINYIN_GROUPS = {"a":"啊阿嗄锕","ai":"埃挨哎唉哀皑癌蔼矮艾碍爱隘捱嗳嗌嫒瑷暧砹锿霭","an":"鞍氨安俺按暗岸胺案谙埯揞犴庵桉铵鹌黯","ang":"肮昂盎","ao":"凹敖熬翱袄傲奥懊澳坳拗嗷岙廒遨媪骜獒聱螯鏊鳌鏖","ba":"芭捌扒叭吧笆八疤巴拔跋靶把耙坝霸罢爸茇菝岜灞钯粑鲅魃","bai":"白柏百摆佰败拜稗捭掰擘","ban":"斑班搬扳般颁板版扮拌伴瓣半办绊阪坂钣瘢癍舨","bang":"邦帮梆榜膀绑棒磅蚌镑傍谤蒡浜","bao":"苞胞包褒薄雹保堡饱宝抱报暴豹鲍爆勹葆孢煲鸨褓趵龅","bei":"杯碑悲卑北辈背贝钡倍狈备惫焙被孛陂邶蓓呗悖碚鹎褙鐾鞴","ben":"奔苯本笨畚坌贲锛","beng":"崩绷甭泵蹦迸嘣甏","bi":"逼鼻比鄙笔彼碧蓖蔽毕毙毖币庇痹闭敝弊必壁臂避陛匕俾荜荸萆薜吡哔狴庳愎滗濞弼妣婢嬖璧畀铋秕裨筚箅篦舭襞跸髀","bian":"鞭边编贬扁便变卞辨辩辫遍匾弁苄忭汴缏煸砭碥窆褊蝙笾鳊","biao":"标彪膘表婊骠杓飑飙飚灬镖镳瘭裱鳔髟","bie":"鳖憋别瘪蹩","bin":"彬斌濒滨宾摈傧豳缤玢槟殡膑镔髌鬓","bing":"兵冰柄丙秉饼炳病并禀冫邴摒","bo":"剥玻菠播拨钵波博勃搏铂箔伯帛舶脖膊渤驳卜亳啵饽檗礴钹鹁簸跛踣","bu":"捕哺补埠不布步簿部怖卟逋瓿晡钚钸醭","ca":"擦嚓礤","cai":"猜裁材才财睬踩采彩菜蔡","can":"餐参蚕残惭惨灿掺孱骖璨粲黪","cang":"苍舱仓沧藏伧","cao":"操糙槽曹草艹嘈漕螬艚","ce":"厕策侧册测恻","cen":"岑涔","ceng":"层蹭曾噌","cha":"插叉茬茶查碴搽察岔差诧猹馇汊姹杈槎檫锸镲衩","chai":"拆柴豺侪钗瘥虿","chan":"搀蝉馋谗缠铲产阐颤冁谄蒇廛忏潺澶羼婵骣觇禅镡蟾躔","chang":"昌猖场尝常偿肠厂敞畅唱倡伥鬯苌菖徜怅惝阊娼嫦昶氅鲳","chao":"超抄钞朝嘲潮巢吵炒怊晁焯耖","che":"车扯撤掣彻澈坼屮砗","chen":"郴臣辰尘晨忱沉陈趁衬谌谶抻嗔宸琛榇碜龀","cheng":"撑称城橙成呈乘程惩澄诚承逞骋秤丞埕枨柽晟塍瞠铖裎蛏酲","chi":"吃痴持池迟弛驰耻齿侈尺赤翅斥炽傺坻墀茌叱哧啻嗤彳饬媸敕眵鸱瘛褫蚩螭笞篪踟魑","chong":"充冲虫崇宠茺忡憧铳舂艟","chou":"抽酬畴踌稠愁筹仇绸瞅丑臭俦帱惆瘳雠","chu":"初出橱厨躇锄雏滁除楚础储矗搐触处畜亍刍怵憷绌杵楮樗褚蜍蹰黜","chuai":"揣搋啜嘬膪踹","chuan":"川穿椽传船喘串舛遄巛氚钏舡","chuang":"疮窗幢床闯创怆","chui":"吹炊捶锤垂椎陲棰槌","chun":"春椿醇唇淳纯蠢莼鹑蝽","chuo":"戳绰辶辍踔龊","ci":"疵茨磁雌辞慈瓷词此刺赐次伺茈呲祠鹚糍","cong":"聪葱囱匆从丛苁淙骢琮璁枞","cou":"凑辏腠","cu":"粗醋簇促蔟徂猝殂酢蹙蹴","cuan":"蹿篡窜汆撺爨镩","cui":"摧崔催脆瘁粹淬翠萃啐悴璀榱毳","cun":"村存寸忖皴","cuo":"磋撮搓措挫错厝嵯脞锉矬痤鹾蹉","da":"搭达答瘩打大耷哒嗒怛妲沓褡笪靼鞑","dai":"呆歹傣戴带殆代贷袋待逮怠埭甙呔岱迨骀绐玳黛","dan":"耽担丹单郸掸胆旦氮但惮淡诞弹蛋儋萏啖澹殚赕眈疸瘅聃箪","dang":"当挡党荡档谠凼菪宕砀铛裆","dao":"刀捣蹈倒岛祷导到稻悼道盗刂叨忉氘焘纛","de":"德得的锝","deng":"蹬灯登等瞪凳邓噔嶝戥磴镫簦","di":"堤低滴迪敌笛狄涤翟嫡抵底地蒂第帝弟递缔氐籴诋谛邸荻嘀娣柢棣觌砥碲睇镝羝骶","dian":"颠掂滇碘点典靛垫电佃甸店惦奠淀殿阽坫巅玷钿癜癫簟踮","diao":"碉叼雕凋刁掉吊钓调铞铫貂鲷","die":"跌爹碟蝶迭谍叠垤堞揲喋嗲牒瓞耋蹀鲽","ding":"丁盯叮钉顶鼎锭定订仃啶玎腚碇铤疔耵酊","diu":"丢铥","dong":"东冬董懂动栋侗恫冻洞垌咚岽峒氡胨胴硐鸫","dou":"兜抖斗陡豆逗痘都蔸窦蚪篼","du":"督毒犊独读堵睹赌杜镀肚度渡妒芏嘟渎椟牍碡蠹笃髑黩","duan":"端短锻段断缎椴煅簖","dui":"堆兑队对怼憝碓镦","dun":"墩吨蹲敦顿囤钝盾遁沌炖砘礅盹趸","duo":"掇哆多夺垛躲朵跺舵剁惰堕咄哚缍柁铎裰踱","e":"蛾峨鹅俄额讹娥恶厄扼遏鄂饿噩谔垩苊莪萼呃愕阏屙婀轭腭锇锷鹗颚鳄","ei":"诶","en":"恩蒽摁","er":"而儿耳尔饵洱二贰佴迩珥铒鸸鲕","fa":"发罚筏伐乏阀法珐垡砝","fan":"藩帆番翻樊矾钒繁凡烦反返范贩犯饭泛蕃蘩幡梵燔畈蹯","fang":"坊芳方肪房防妨仿访纺放匚邡枋钫舫鲂","fei":"菲非啡飞肥匪诽吠肺废沸费芾狒悱淝妃绯榧腓斐扉镄痱蜚篚翡霏鲱","fen":"芬酚吩氛分纷坟焚汾粉奋份忿愤粪偾瀵棼鲼鼢","feng":"丰封枫蜂峰锋风疯烽逢冯缝讽奉凤俸酆葑唪沣砜","fou":"否缶","fu":"佛夫敷肤孵扶拂辐幅氟符伏俘服浮涪福袱弗甫抚辅俯釜斧腑府腐赴副覆赋复傅付阜父腹负富讣附妇缚咐匐凫阝郛芙苻茯莩菔拊呋幞怫滏艴孚驸绂绋桴赙祓砩黻黼罘稃馥蚨蜉蝠蝮麸趺跗鲋鳆","ga":"噶嘎伽尬呷尕尜旮钆","gai":"该改概钙盖溉丐陔垓戤赅","gan":"干甘杆柑竿肝赶感秆敢赣坩苷尴擀泔淦澉绀橄旰矸疳酐","gang":"冈刚钢缸肛纲岗港杠戆罡筻","gao":"篙皋高膏羔糕搞镐稿告睾诰郜藁缟槔槁杲锆","ge":"哥歌搁戈鸽胳疙割革葛格阁隔铬个各咯鬲仡哿圪塥嗝纥搿膈硌镉袼虼舸骼","gei":"给","gen":"根跟亘茛哏艮","geng":"耕更庚羹埂耿梗哽赓绠鲠","gong":"工攻功恭龚供躬公宫弓巩汞拱贡共廾珙肱蚣觥","gou":"钩勾沟苟狗垢构购够佝诟岣遘媾缑枸觏彀笱篝鞲","gu":"辜菇咕箍估沽孤姑鼓古蛊骨谷股故顾固雇嘏诂菰呱崮汩梏轱牯牿臌毂瞽罟钴锢鸪鹄痼蛄酤觚鲴鹘","gua":"刮瓜剐寡挂褂卦诖栝胍鸹聒","guai":"乖拐怪掴","guan":"棺关官冠观管馆罐惯灌贯倌莞掼涫盥鹳鳏","guang":"光广逛咣犷桄胱","gui":"瑰规圭硅归龟闺轨鬼诡癸桂柜跪贵刽傀炔匦刿庋宄妫桧晷皈簋鲑鳜","gun":"辊滚棍丨衮绲磙鲧","guo":"锅郭国果裹过馘埚呙帼崞猓椁虢蜾蝈","ha":"蛤哈铪","hai":"骸孩海氦亥害骇还嗨胲醢","han":"酣憨邯韩含涵寒函喊罕翰撼捍旱憾悍焊汗汉邗菡撖阚瀚晗焓顸颔蚶鼾","hang":"夯杭航沆绗珩颃","hao":"壕嚎豪毫郝好耗号浩貉蒿薅嗥嚆濠灏昊皓颢蚝","he":"呵喝荷菏核禾和何合盒阂河涸赫褐鹤贺诃劾壑嗬阖曷盍颌蚵翮","hei":"嘿黑","hen":"痕很狠恨","heng":"哼亨横衡恒蘅桁","hong":"轰哄烘虹鸿洪宏弘红黉訇讧荭蕻薨闳泓","hou":"喉侯猴吼厚候后堠後逅瘊篌糇鲎骺","hu":"呼乎忽瑚壶葫胡蝴狐糊湖弧虎唬护互沪户冱唿囫岵猢怙惚浒滹琥槲轷觳烀煳戽扈祜瓠鹕鹱虍笏醐斛","hua":"花哗华猾滑画划化话骅桦铧","huai":"槐徊怀淮坏踝","huan":"欢环桓缓换患唤痪豢焕涣宦幻郇奂萑擐圜獾洹浣漶寰逭缳锾鲩鬟","huang":"荒慌黄磺蝗簧皇凰惶煌晃幌恍谎隍徨湟潢遑璜肓癀蟥篁鳇","hui":"灰挥辉徽恢蛔回毁悔慧卉惠晦贿秽会烩汇讳诲绘诙茴荟蕙咴哕喙隳洄浍彗缋珲晖恚虺蟪麾","hun":"荤昏婚魂浑混诨馄阍溷","huo":"豁活伙火获或惑霍货祸劐藿攉嚯夥砉钬锪镬耠蠖","ji":"击圾基机畸稽积箕肌饥迹激讥鸡姬绩缉吉极棘辑籍集及急疾汲即嫉级挤几脊己蓟技冀季伎祭剂悸济寄寂计记既忌际妓继纪藉丌亟乩剞佶偈诘墼芨芰荠蒺蕺掎叽咭哜唧岌嵴洎彐屐骥畿玑楫殛戟戢赍觊犄齑矶羁嵇稷瘠虮笈笄暨跻跽霁鲚鲫髻麂","jia":"嘉枷夹佳家加荚颊贾甲钾假稼价架驾嫁茄郏葭岬浃迦珈戛胛恝铗镓痂瘕袷蛱笳袈跏","jian":"歼监坚尖笺间煎兼肩艰奸缄茧检柬碱硷拣捡简俭剪减荐鉴践贱见键箭件健舰剑饯渐溅涧建僭谏谫菅蒹搛囝湔蹇謇缣枧楗戋戬牮犍毽腱睑锏鹣裥笕翦趼踺鲣鞯","jiang":"僵姜将浆江疆蒋桨奖讲匠酱降茳洚绛缰犟礓耩糨豇","jiao":"蕉椒礁焦胶交郊浇骄娇搅铰矫侥脚狡角饺缴绞剿教酵轿较叫窖佼僬艽茭挢噍峤徼湫姣敫皎鹪蛟醮跤鲛","jie":"揭接皆秸街阶截劫节杰捷睫竭洁结解姐戒芥界借介疥诫届讦卩拮喈嗟婕孑桀碣疖颉蚧羯鲒骱","jin":"巾筋斤金今津襟紧锦仅谨进靳晋禁近烬浸尽劲卺荩堇噤馑廑妗缙瑾槿赆觐钅衿矜","jing":"荆兢茎睛晶鲸京惊精粳经井警景颈静境敬镜径痉靖竟竞净刭儆阱菁獍憬泾迳弪婧肼胫腈旌靓","jiong":"炯窘冂迥炅扃","jiu":"揪究纠玖韭久灸九酒厩救旧臼舅咎就疚僦啾阄柩桕鸠鹫赳鬏","ju":"桔鞠拘狙疽居驹菊局咀矩举沮聚拒据巨具距踞锯俱句惧炬剧倨讵苣苴莒菹掬遽屦琚椐榘榉橘犋飓钜锔窭裾趄醵踽龃雎鞫","juan":"捐鹃娟倦眷卷绢鄄狷涓桊蠲锩镌隽","jue":"嚼撅攫抉掘倔爵觉决诀绝厥劂谲矍蕨噘噱崛獗孓珏桷橛爝镢蹶觖","jun":"均菌钧军君峻俊竣浚郡骏捃皲麇","ka":"喀咖卡佧咔胩","kai":"开揩楷凯慨剀垲蒈忾恺铠锎锴","kan":"槛刊堪勘坎砍看侃莰戡龛瞰","kang":"康慷糠扛抗亢炕伉闶钪","kao":"考拷烤靠尻栲犒铐","ke":"坷苛柯棵磕颗科壳咳可渴克刻客课嗑岢恪溘骒缂珂轲氪瞌钶锞稞疴窠颏蝌髁","ken":"肯啃垦恳裉龈","keng":"坑吭铿","kong":"空恐孔控倥崆箜","kou":"抠口扣寇芤蔻叩眍筘","ku":"枯哭窟苦酷库裤刳堀喾绔骷","kua":"夸垮挎跨胯侉","kuai":"块筷侩快蒯郐哙狯脍","kuan":"宽款髋","kuang":"匡筐狂框矿眶旷况诓诳邝圹夼哐纩贶","kui":"亏盔岿窥葵奎魁馈愧溃馗匮夔隗蒉揆喹喟悝愦逵暌睽聩蝰篑跬","kun":"坤昆捆困悃阃琨锟醌鲲髡","kuo":"括扩廓阔蛞","la":"垃拉喇蜡腊辣啦剌邋旯砬瘌","lai":"莱来赖崃徕涞濑赉睐铼癞籁","lan":"蓝婪栏拦篮阑兰澜谰揽览懒缆烂滥岚漤榄斓罱镧褴","lang":"琅榔狼廊郎朗浪莨蒗啷阆锒稂螂","lao":"捞劳牢老佬姥酪烙涝潦唠崂栳铑铹痨耢醪","le":"乐肋了仂叻泐鳓","lei":"勒雷镭蕾磊累儡垒擂类泪羸诔嘞嫘缧檑耒酹","leng":"棱楞冷塄愣","li":"厘梨犁黎篱狸离漓理李里鲤礼莉荔吏栗丽厉励砾历利傈例俐痢立粒沥隶力璃哩俪俚郦坜苈莅蓠藜呖唳喱猁溧澧逦娌嫠骊缡枥栎轹戾砺詈罹锂鹂疠疬蛎蜊蠡笠篥粝醴跞雳鲡鳢黧","lia":"俩","lian":"联莲连镰廉怜涟帘敛脸链恋炼练蔹奁潋濂琏楝殓臁裢裣蠊鲢","liang":"粮凉梁粱良两辆量晾亮谅墚椋踉魉","liao":"撩聊僚疗燎寥辽撂镣廖料蓼尥嘹獠寮缭钌鹩","lie":"列裂烈劣猎冽埒捩咧洌趔躐鬣","lin":"琳林磷霖临邻鳞淋凛赁吝拎蔺啉嶙廪懔遴檩辚膦瞵粼躏麟","ling":"玲菱零龄铃伶羚凌灵陵岭领另令酃苓呤囹泠绫柃棂瓴聆蛉翎鲮","liu":"溜琉榴硫馏留刘瘤流柳六浏遛骝绺旒熘锍镏鹨鎏","long":"龙聋咙笼窿隆垄拢陇垅茏泷珑栊胧砻癃","lou":"楼娄搂篓漏陋偻蒌喽嵝镂瘘耧蝼髅","lu":"芦卢颅庐炉掳卤虏鲁麓碌露路赂鹿潞禄录陆戮垆撸噜泸渌漉逯璐栌橹轳辂辘氇胪镥鸬鹭簏舻鲈","luan":"峦挛孪滦卵乱脔娈栾鸾銮","lun":"抡轮伦仑沦纶论囵","luo":"萝螺罗逻锣箩骡裸落洛骆络倮蠃荦摞猡泺漯珞椤脶镙瘰雒","lv":"驴吕铝侣旅履屡缕虑氯律率滤绿捋闾榈膂稆褛","lve":"掠略锊","ma":"妈麻玛码蚂马骂嘛吗唛犸嬷杩蟆","mai":"埋买麦卖迈脉劢荬霾","man":"瞒馒蛮满蔓曼慢漫谩墁幔缦熳镘颟螨鳗鞔","mang":"芒茫盲氓忙莽邙漭硭蟒","mao":"猫茅锚毛矛铆卯茂冒帽貌贸袤茆峁泖瑁昴牦耄旄懋瞀蝥蟊髦","me":"么","mei":"玫枚梅酶霉煤没眉媒镁每美昧寐妹媚莓嵋猸浼湄楣镅鹛袂魅","men":"门闷们扪焖懑钔","meng":"萌蒙檬盟锰猛梦孟勐甍瞢懵朦礞虻蜢蠓艋艨","mi":"眯醚靡糜迷谜弥米秘觅泌蜜密幂芈冖谧蘼咪嘧猕汨宓弭脒祢敉糸縻麋","mian":"棉眠绵冕免勉娩缅面沔渑湎宀腼眄","miao":"苗描瞄藐秒渺庙妙喵邈缈杪淼眇鹋","mie":"蔑灭乜咩蠛篾","min":"民抿皿敏悯闽苠岷闵泯缗珉愍黾鳘","ming":"明螟鸣铭名命冥茗溟暝瞑酩","miu":"谬","mo":"摸摹蘑模膜磨摩魔抹末莫墨默沫漠寞陌谟茉蓦馍嫫殁镆秣瘼耱貊貘麽","mou":"谋牟某侔哞缪眸蛑鍪","mu":"拇牡亩姆母墓暮幕募慕木目睦牧穆仫坶苜沐毪钼","n":"嗯","na":"拿哪呐钠那娜纳捺肭镎衲","nai":"氖乃奶耐奈鼐艿萘柰","nan":"南男难喃囡楠腩蝻赧","nang":"囊攮囔馕曩","nao":"挠脑恼闹淖孬垴呶猱瑙硇铙蛲","ne":"呢讷疒","nei":"馁内","nen":"嫩恁","neng":"能","ni":"妮霓倪泥尼拟你匿腻逆溺伲坭猊怩昵旎睨铌鲵","nian":"蔫拈年碾撵捻念辗廿埝辇黏鲇鲶","niang":"娘酿","niao":"鸟尿茑嬲脲袅","nie":"捏聂孽啮镊镍涅陧蘖嗫颞臬蹑","nin":"您","ning":"柠狞凝宁拧泞佞咛甯聍","niu":"牛扭钮纽狃忸妞","nong":"脓浓农弄侬哝","nou":"耨","nu":"奴努怒弩胬孥驽","nuan":"暖","nuo":"挪懦糯诺傩搦喏锘","nv":"女恧钕衄","nve":"虐疟","o":"哦喔噢","ou":"欧鸥殴藕呕偶沤讴怄瓯耦","pa":"啪趴爬帕怕琶葩杷筢","pai":"拍排牌徘湃派俳蒎哌","pan":"攀潘盘磐盼畔判叛拚爿泮袢襻蟠蹒","pang":"乓庞旁耪胖彷滂逄螃","pao":"抛咆刨炮袍跑泡匏狍庖脬疱","pei":"呸胚培裴赔陪配佩沛辔帔旆锫醅霈","pen":"喷盆湓","peng":"砰抨烹澎彭蓬棚硼篷膨朋鹏捧碰堋嘭怦蟛","pi":"辟坯砒霹批披劈琵毗啤脾疲皮匹痞僻屁譬丕仳陴邳郫圮埤鼙芘擗噼庀淠媲纰枇甓睥罴铍癖疋蚍蜱貔","pian":"篇偏片骗谝骈犏胼翩蹁","piao":"飘漂瓢票剽嘌嫖缥殍瞟螵","pie":"撇瞥丿苤氕","pin":"拼频贫品聘姘嫔榀牝颦","ping":"乒坪苹萍平凭瓶评屏俜娉枰鲆","po":"泊坡泼颇婆破魄迫粕叵鄱珀钋钷皤笸","pou":"剖裒掊","pu":"脯扑铺仆莆葡菩蒲埔朴圃普浦谱曝瀑匍噗溥濮璞攴氆攵镤镨蹼","qi":"期欺栖戚妻七凄漆柒沏其棋奇歧畦崎脐齐旗祈祁骑起岂乞企启契砌器气迄弃汽泣讫亓俟圻芑芪萁萋葺蕲嘁屺岐汔淇骐绮琪琦杞桤槭耆祺憩碛颀蛴蜞綦綮蹊鳍麒","qia":"掐恰洽葜髂","qian":"牵扦钎铅千迁签仟谦乾黔钱钳前潜遣浅谴堑嵌欠歉倩佥阡凵芊芡茜掮岍悭慊骞搴褰缱椠肷愆钤虔箝","qiang":"枪呛腔羌墙蔷强抢丬戕嫱樯戗炝锖锵镪襁蜣羟跄","qiao":"橇锹敲悄桥瞧乔侨巧鞘撬翘峭俏窍劁诮谯荞愀憔缲樵硗跷鞒","qie":"切且怯窃郄惬妾挈锲箧","qin":"钦侵亲秦琴勤芹擒禽寝沁芩揿吣嗪噙溱檎锓螓衾","qing":"青轻氢倾卿清擎晴氰情顷请庆苘圊檠磬蜻罄箐謦鲭黥","qiong":"琼穷邛芎茕穹蛩筇跫銎","qiu":"秋丘邱球求囚酋泅俅巯犰逑遒楸赇虬蚯蝤裘糗鳅鼽","qu":"趋区蛆曲躯屈驱渠取娶龋趣去诎劬蕖蘧岖衢阒璩觑氍朐祛磲鸲癯蛐蠼麴瞿黢","quan":"圈颧权醛泉全痊拳犬券劝诠荃犭悛绻辁畎铨蜷筌鬈","que":"缺瘸却鹊榷确雀阕阙悫","qun":"裙群逡","ran":"然燃冉染苒蚺髯","rang":"瓤壤攘嚷让禳穰","rao":"饶扰绕荛娆桡","re":"惹热","ren":"壬仁人忍韧任认刃妊纫亻仞荏葚饪轫稔衽","reng":"扔仍","ri":"日","rong":"戎茸蓉荣融熔溶容绒冗嵘狨榕肜蝾","rou":"揉柔肉糅蹂鞣","ru":"茹蠕儒孺如辱乳汝入褥蓐薷嚅洳溽濡缛铷襦颥","ruan":"软阮朊","rui":"蕊瑞锐芮蕤枘睿蚋","run":"闰润","ruo":"若弱偌箬","sa":"撒洒萨卅仨挲脎飒","sai":"腮鳃塞赛噻","san":"三叁伞散馓毵糁","sang":"桑嗓丧搡磉颡","sao":"搔骚扫嫂埽缫臊瘙鳋","se":"瑟色涩啬铯穑","sen":"森","seng":"僧","sha":"莎砂杀刹沙纱傻啥煞厦唼歃铩痧裟霎鲨","shai":"筛晒酾","shan":"珊苫杉山删煽衫闪陕擅赡膳善汕扇缮剡讪鄯埏芟彡潸姗嬗骟膻钐疝蟮舢跚鳝","shang":"墒伤商赏晌上尚裳垧绱殇熵觞","shao":"梢捎稍烧芍勺韶少哨邵绍劭苕潲蛸筲艄","she":"奢赊蛇舌舍赦摄射慑涉社设厍佘猞滠歙畲麝","shen":"砷申呻伸身深娠绅神沈审婶甚肾慎渗什诜谂莘哂渖椹胂矧蜃","sheng":"声生甥牲升绳省盛剩胜圣嵊眚笙","shi":"匙师失狮施湿诗尸虱十石拾时食蚀实识史矢使屎驶始式示士世柿事拭誓逝势是嗜噬适仕侍释饰氏市恃室视试似谥埘莳蓍弑饣轼贳炻礻铈螫舐筮豉豕鲥鲺","shou":"收手首守寿授售受瘦兽扌狩绶艏","shu":"蔬枢梳殊抒输叔舒淑疏书赎孰熟薯暑曙署蜀黍鼠属术述树束戍竖墅庶数漱恕倏塾菽摅沭澍姝纾毹腧殳秫","shua":"刷耍唰","shuai":"摔衰甩帅蟀","shuan":"栓拴闩涮","shuang":"霜双爽孀","shui":"谁水睡税氵","shun":"吮瞬顺舜","shuo":"说硕朔烁蒴搠妁槊铄","si":"斯撕嘶思私司丝死肆寺嗣四饲巳厮兕厶咝汜泗澌姒驷纟缌祀锶鸶耜蛳笥","song":"松耸怂颂送宋讼诵凇菘崧嵩忪悚淞竦","sou":"搜艘擞嗽叟薮嗖嗾馊溲飕瞍锼螋","su":"苏酥俗素速粟僳塑溯宿诉肃夙谡蔌嗉愫涑簌觫稣","suan":"酸蒜算狻","sui":"虽隋随绥髓碎岁穗遂隧祟谇荽濉邃燧眭睢","sun":"孙损笋荪狲飧榫隼","suo":"蓑梭唆缩琐索锁所唢嗦嗍娑桫睃羧","ta":"塌他它她塔獭挞蹋踏闼溻遢榻铊趿鳎","tai":"胎苔抬台泰酞太态汰邰薹肽炱钛跆鲐","tan":"坍摊贪瘫滩坛檀痰潭谭谈坦毯袒碳探叹炭郯昙忐钽锬覃","tang":"汤塘搪堂棠膛唐糖倘躺淌趟烫傥帑饧溏瑭樘铴镗耥螗螳羰醣","tao":"掏涛滔绦萄桃逃淘陶讨套鼗啕洮韬饕","te":"特忒忑慝铽","teng":"藤腾疼誊滕","ti":"梯剔踢锑提题蹄啼体替嚏惕涕剃屉倜荑悌逖绨缇鹈裼醍","tian":"天添填田甜恬舔腆掭忝阗殄畋","tiao":"挑条迢眺跳佻祧窕蜩笤粜龆鲦髫","tie":"贴铁帖萜餮","ting":"厅听烃汀廷停亭庭挺艇莛葶婷梃町蜓霆","tong":"通桐酮瞳同铜彤童桶捅筒统痛佟僮仝茼嗵恸潼砼","tou":"偷投头透亠钭骰","tu":"凸秃突图徒途涂屠土吐兔堍荼菟钍酴","tuan":"湍团抟彖疃","tui":"推颓腿蜕褪退煺","tun":"吞屯臀氽饨暾豚","tuo":"拖托脱鸵陀驮驼椭妥拓唾乇佗坨庹沲沱柝橐砣箨酡跎鼍","wa":"挖哇蛙洼娃瓦袜佤娲腽","wai":"歪外崴","wan":"豌弯湾玩顽丸烷完碗挽晚皖惋宛婉万腕剜芄菀纨绾琬脘畹蜿","wang":"汪王亡枉网往旺望忘妄罔惘辋魍","wei":"威巍微危韦违桅围唯惟为潍维苇萎委伟伪尾纬未蔚味畏胃喂魏位渭谓尉慰卫偎诿隈圩葳薇囗帏帷嵬猥猬闱沩洧涠逶娓玮韪軎炜煨痿艉鲔","wen":"瘟温蚊文闻纹吻稳紊问刎阌汶玟璺雯","weng":"嗡翁瓮蓊蕹","wo":"挝蜗涡窝我斡卧握沃倭莴幄渥肟硪龌","wu":"巫呜钨乌污诬屋无芜梧吾吴毋武五捂午舞伍侮坞戊雾晤物勿务悟误兀仵阢邬圬芴呒唔庑怃忤浯寤迕妩婺骛杌牾焐鹉鹜痦蜈鋈鼯","xi":"昔熙析西硒矽晰嘻吸锡牺稀息希悉膝夕惜熄烯溪汐犀檄袭席习媳喜铣洗系隙戏细僖兮隰郗菥葸蓰奚唏徙饩阋浠淅屣嬉玺樨曦觋欷熹禊禧皙穸蜥螅蟋舄舾羲粞翕醯鼷","xia":"瞎虾匣霞辖暇峡侠狭下夏吓狎遐瑕柙硖罅黠","xian":"掀锨先仙鲜纤咸贤衔舷闲涎弦嫌显险现献县腺馅羡宪陷限线冼苋莶藓岘猃暹娴氙燹祆鹇痫蚬筅籼酰跣跹霰","xiang":"相厢镶香箱襄湘乡翔祥详想响享项巷橡像向象芗葙饷庠骧缃蟓鲞飨","xiao":"萧硝霄哮嚣销消宵淆晓小孝校肖啸笑效哓崤潇逍骁绡枭枵筱箫魈","xie":"楔些歇蝎鞋协挟携邪斜胁谐写械卸蟹懈泄泻谢屑偕亵勰燮薤撷獬廨渫瀣邂绁缬榭榍躞","xin":"薪芯锌欣辛新忻心信衅囟馨忄昕歆鑫","xing":"星腥猩惺兴刑型形邢行醒幸杏性姓陉荇荥擤悻硎","xiong":"兄凶胸匈汹雄熊","xiu":"休修羞朽嗅锈秀袖绣咻岫馐庥溴鸺貅髹","xu":"墟戌需虚嘘须徐许蓄酗叙旭序恤絮婿绪续吁诩勖蓿洫溆顼栩煦盱胥糈醑","xuan":"轩喧宣悬旋玄选癣眩绚儇谖萱揎泫渲漩璇楦暄炫煊碹铉镟痃","xue":"削靴薛学穴雪血谑泶踅鳕","xun":"勋熏循旬询寻驯巡殉汛训讯逊迅巽埙荀荨蕈薰峋徇獯恂洵浔曛窨醺鲟","ya":"压押鸦鸭呀丫芽牙蚜崖衙涯雅哑亚讶轧伢垭揠吖岈迓娅琊桠氩砑睚痖","yan":"焉咽阉烟淹盐严研蜒岩延言颜阎炎沿奄掩眼衍演艳堰燕厌砚雁唁彦焰宴谚验厣赝俨偃兖讠谳郾鄢芫菸崦恹闫湮滟妍嫣琰檐晏胭腌焱罨筵酽魇餍鼹","yang":"殃央鸯秧杨扬佯疡羊洋阳氧仰痒养样漾徉怏泱炀烊恙蛘鞅","yao":"邀腰妖瑶摇尧遥窑谣姚咬舀药要耀钥夭爻吆崾徭幺珧杳轺曜肴鹞窈繇鳐","ye":"椰噎耶爷野冶也页掖业叶曳腋夜液靥谒邺揶晔烨铘","yi":"一壹医揖铱依伊衣颐夷遗移仪胰疑沂宜姨彝椅蚁倚已乙矣以艺抑易邑屹亿役臆逸肄疫亦裔意毅忆义益溢诣议谊译异翼翌绎刈劓佚佾诒圯埸懿苡薏弈奕挹弋呓咦咿噫峄嶷猗饴怿怡悒漪迤驿缢殪轶贻欹旖熠眙钇镒镱痍瘗癔翊衤蜴舣羿翳酏黟","yin":"茵荫因殷音阴姻吟银淫寅饮尹引隐印胤鄞廴垠堙茚吲喑狺夤洇氤铟瘾蚓霪","ying":"英樱婴鹰应缨莹萤营荧蝇迎赢盈影颖硬映嬴郢茔莺萦蓥撄嘤膺滢潆瀛瑛璎楹媵鹦瘿颍罂","yo":"哟唷","yong":"拥佣臃痈庸雍踊蛹咏泳涌永恿勇用俑壅墉喁慵邕镛甬鳙饔","you":"幽优悠忧尤由邮铀犹油游酉有友右佑釉诱又幼卣攸侑莠莜莸尢呦囿宥柚猷牖铕疣蚰蚴蝣鱿黝鼬","yu":"迂淤于盂榆虞愚舆余俞逾鱼愉渝渔隅予娱雨与屿禹宇语羽玉域芋郁遇喻峪御愈欲狱育誉浴寓裕预豫驭禺毓伛俣谀谕萸蓣揄圄圉嵛狳饫馀庾阈鬻妪妤纡瑜昱觎腴欤於煜燠肀聿钰鹆鹬瘐瘀窬窳蜮蝓竽臾舁雩龉","yuan":"鸳渊冤元垣袁原援辕园员圆猿源缘远苑愿怨院垸塬掾沅媛瑗橼爰眢鸢螈箢鼋","yue":"曰约越跃岳粤月悦阅龠瀹樾刖钺","yun":"耘云郧匀陨允运蕴酝晕韵孕郓芸狁恽愠纭韫殒昀氲熨筠","za":"匝砸杂咋拶咂","zai":"栽哉灾宰载再在仔崽甾","zan":"咱攒暂赞瓒昝簪糌趱錾","zang":"赃脏葬奘驵臧","zao":"遭糟凿藻枣早澡蚤躁噪造皂灶燥唣","ze":"责择则泽仄赜啧帻迮昃笮箦舴","zei":"贼","zen":"怎谮","zeng":"增憎赠缯甑罾锃","zha":"扎喳渣札铡闸眨栅榨乍炸诈柞揸吒咤哳楂砟痄蚱齄","zhai":"摘斋宅窄债寨砦瘵","zhan":"瞻毡詹粘沾盏斩崭展蘸栈占战站湛绽谵搌旃","zhang":"长樟章彰漳张掌涨杖丈帐账仗胀瘴障仉鄣幛嶂獐嫜璋蟑","zhao":"招昭找沼赵照罩兆肇召爪诏啁棹钊笊","zhe":"遮折哲蛰辙者锗蔗这浙着谪摺柘辄磔鹧褶蜇赭","zhen":"珍斟真甄砧臻贞针侦枕疹诊震振镇阵帧圳蓁浈缜桢榛轸赈胗朕祯畛稹鸩箴","zheng":"蒸挣睁征狰争怔整拯正政症郑证诤峥徵钲铮筝","zhi":"芝枝支吱蜘知肢脂汁之织职直植殖执值侄址指止趾只旨纸志挚掷至致置帜峙制智秩稚质炙痔滞治窒卮陟郅埴芷摭帙夂忮彘咫骘栉枳栀桎轵轾贽胝膣祉祗黹雉鸷痣蛭絷酯跖踬踯豸觯","zhong":"中盅忠钟衷终种肿重仲众冢锺螽舯踵","zhou":"舟周州洲诌粥轴肘帚咒皱宙昼骤荮妯纣绉胄籀酎","zhu":"珠株蛛朱猪诸诛逐竹烛煮拄瞩嘱主著柱助蛀贮铸筑住注祝驻丶伫侏邾苎茱洙渚潴杼槠橥炷铢疰瘃竺箸舳翥躅麈","zhua":"抓","zhuai":"拽","zhuan":"专砖转撰赚篆啭馔颛","zhuang":"桩庄装妆撞壮状","zhui":"锥追赘坠缀惴骓缒隹","zhun":"谆准肫窀","zhuo":"捉拙卓桌茁酌啄灼浊倬诼擢浞涿濯禚斫镯","zi":"兹咨资姿滋淄孜紫籽滓子自渍字谘嵫姊孳缁梓辎赀恣眦锱秭耔笫粢趑觜訾龇鲻髭","zong":"鬃棕踪宗综总纵偬腙粽","zou":"邹走奏揍诹陬鄹驺楱鲰","zu":"租足卒族祖诅阻组俎镞","zuan":"钻纂攥缵躜","zui":"嘴醉最罪蕞","zun":"尊遵撙樽鳟","zuo":"琢昨左佐做作坐座阼唑怍胙祚"};
@@ -1010,23 +1287,82 @@ async function api(path, method='GET', body=null) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/* ---------- 设置页 ---------- */
-function toggleSettings() {
-  const p = document.getElementById('settingsPage');
-  if (p.classList.contains('open')) p.classList.remove('open');
-  else p.classList.add('open');
+/* ---------- 侧边栏 / 页面切换 ---------- */
+// 侧边栏折叠：只切一个 class —— 文字收起、只留图标、箭头翻转全由 CSS 接管；
+// 状态记在本地，下次打开还是上次的样子
+function toggleSidebar() {
+  const sb = document.getElementById('sidebar');
+  const collapsed = sb.classList.toggle('collapsed');
+  try { localStorage.setItem('sidebarCollapsed', collapsed ? '1' : '0'); } catch (e) {}
+}
+
+// 侧边栏高亮项：设置页打开时高亮当前设置标签，否则高亮当前设备（设备即主页）
+function setNavActive(name) {
+  document.querySelectorAll('.nav-item').forEach(b =>
+    b.classList.toggle('active', b.dataset.nav === name));
+}
+
+function applyNavActive() {
+  setNavActive(settingsOpen ? settingsTab : (activeDevice ? 'dev:' + activeDevice : ''));
+}
+
+// 回主页 = 收起设置页、露出当前设备的应用页。
+// 一台设备都没有时主页没内容可看，直接落到「设备与连接」引导用户去连一台。
+function showHome() {
+  if (!devices.length) { openSettings('conn'); return; }
+  settingsOpen = false;
+  document.getElementById('settingsPage').classList.remove('open');
+  applyNavActive();
 }
 
 function openSettings(tab) {
+  settingsTab = tab || 'conn';
+  settingsOpen = true;
   document.getElementById('settingsPage').classList.add('open');
-  if (tab) setSettingsTab(tab);
+  setSettingsTab(settingsTab);
 }
 
 function setSettingsTab(name) {
-  document.querySelectorAll('.settings-tab-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.tab === name));
+  settingsTab = name;
   document.querySelectorAll('.tab-pane').forEach(p =>
     p.classList.toggle('active', p.id === 'pane-' + name));
+  applyNavActive();
+}
+
+/* ---------- 主题 ---------- */
+// 主题存在后端配置里（不只是浏览器本地），这样主窗口标题栏启动时就能按主题上色。
+// themeChosen：用户在本次会话里点过主题开关没有。点过之后轮询就不再插手主题 ——
+// 主题只有两个值，跟后端对齐是为了「别的窗口改了我也跟着改」，而这里只有这一个窗口，
+// 用户点的那一下优先级最高。不锁死的话，轮询和那次 POST 谁先落地是不确定的，界面会
+// 被带回旧主题再翻回来，看起来就是切主题时闪一下。
+let themeChosen = false;
+
+function applyTheme(theme) {
+  const light = theme === 'light';
+  document.documentElement.dataset.theme = light ? 'light' : 'dark';
+  const sw = document.getElementById('light_theme');
+  if (sw) sw.checked = light;
+}
+
+// 换主题要一次性动掉一大片 CSS 变量，页面上每个带 transition 的元素都会各自补间一遍
+// （背景色、文字色、阴影全在补），在 WebView2 里就是整屏闪一下。所以先把过渡冻住，
+// 换完令牌、结算完样式再放开 —— 颜色一步到位，不做逐元素动画。
+function applyThemeNow(theme) {
+  const root = document.documentElement;
+  root.classList.add('no-anim');
+  void root.offsetHeight;          // 先让「冻结」生效，别和换色挤在同一帧里结算
+  applyTheme(theme);
+  void root.offsetHeight;          // 结算新样式
+  requestAnimationFrame(() => root.classList.remove('no-anim'));
+}
+
+async function saveTheme(on) {
+  const theme = on ? 'light' : 'dark';
+  config.theme = theme;
+  themeChosen = true;
+  applyThemeNow(theme);
+  try { await api('/api/config', 'POST', { theme }); } catch (e) {}
+  setHint(on ? '已切换到浅色主题' : '已切换到深色主题', 6000);
 }
 
 /* ---------- 瞬时提示（与连接状态分离，避免互相覆盖）---------- */
@@ -1076,18 +1412,24 @@ function syncView() {
 function renderTabs() {
   const bar = document.getElementById('deviceTabs');
   bar.classList.toggle('show', devices.length > 0);
+  // 没设备时整个「设备」分组都不显示，侧边栏不为空标签占位
+  document.getElementById('navDeviceGroup').style.display = devices.length ? '' : 'none';
   bar.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (const d of devices) {
     const t = document.createElement('button');
-    t.className = 'device-tab' + (d.serial === activeDevice ? ' active' : '');
-    t.title = d.serial;
-    t.innerHTML = '<span class="tab-model">' + escapeHtml(deviceLabel(d)) + '</span>' +
-                  '<span class="tab-addr">' + escapeHtml((d.usb ? 'USB · ' : '') +
-                                                         (d.ip || d.serial)) + '</span>';
+    // 设备标签就是主页入口：外观与设置标签同源（nav-item），折叠后同样只剩一个图标
+    t.className = 'nav-item device-tab';
+    t.dataset.nav = 'dev:' + d.serial;      // 由 applyNavActive 负责高亮
+    t.title = deviceLabel(d) + ' · ' + d.serial;
+    t.innerHTML = '<span class="nav-ico">' + SVG.phone + '</span>' +
+                  '<span class="dev-text">' +
+                  '<span class="dev-model">' + escapeHtml(deviceLabel(d)) + '</span>' +
+                  '<span class="dev-sub">' + escapeHtml((d.usb ? 'USB · ' : '') +
+                                                         (d.ip || d.serial)) + '</span></span>';
     const x = document.createElement('span');
     x.className = 'tab-close';
-    x.textContent = '×';
+    x.innerHTML = SVG.close;
     x.title = '断开该设备';
     x.onclick = ev => { ev.stopPropagation(); disconnectDevice(d.serial); };
     t.appendChild(x);
@@ -1120,13 +1462,20 @@ function renderConnList() {
 }
 
 function selectDevice(serial) {
-  if (serial === activeDevice) return;
-  activeDevice = serial;
-  devKeyApplied = '';
+  const changed = serial !== activeDevice;
+  if (changed) {
+    activeDevice = serial;
+    devKeyApplied = '';
+  }
+  // 点设备标签就是「回这台设备的主页」：无论在设置页哪一页，都关掉设置页
+  settingsOpen = false;
+  document.getElementById('settingsPage').classList.remove('open');
   syncDevicesUI();
   syncView();
-  const c = ctxOf(serial);
-  if (c.apps.length === 0 && c.state !== 'loading') loadApps();
+  if (changed) {
+    const c = ctxOf(serial);
+    if (c.apps.length === 0 && c.state !== 'loading') loadApps();
+  }
 }
 
 async function disconnectDevice(serial) {
@@ -1150,6 +1499,8 @@ async function checkStatus() {
   const offline = s.offline || [];      // 掉线但 adb 还挂着
   config = s.config || {};
   quickMap = config.quick_launch || {};
+  // 主题以后端配置为准，每次轮询对齐一次；用户手动切过就交给他，不再跟后端对齐
+  if (!themeChosen) applyTheme(config.theme);
   // 手机传回新图标后图标库版本会变：这里重画列表，界面自己就换上新的图标了
   if (syncIconRev(s.icon_rev)) {
     filterApps();
@@ -1222,15 +1573,19 @@ async function checkStatus() {
     if (activeDevice && ctxOf(activeDevice).state !== 'loading') loadApps();
   }
   syncDevicesUI();
+  // 一台设备都没有：主页是空的，自动把「设备与连接」摆出来，先让用户连上再说
+  if (!devices.length && !settingsOpen) openSettings('conn');
 }
 
 function syncDevicesUI() {
-  updateLockBar(devices);         // 顶栏解锁 / 熄屏按钮跟随当前设备，锁屏状态每次轮询都可能变
+  updateLockBar(devices);         // 第一行的解锁 / 熄屏按钮跟随当前设备，锁屏状态每次轮询都可能变
   const key = devices.map(d => d.serial).join(',') + '#' + activeDevice;
-  if (key === devKeyApplied) return;
-  devKeyApplied = key;
-  renderTabs();
-  renderConnList();
+  if (key !== devKeyApplied) {
+    devKeyApplied = key;
+    renderTabs();
+    renderConnList();
+  }
+  applyNavActive();               // 设备列表 / 当前设备变了，高亮跟着重算（设备即主页）
 }
 
 function fillConfigInputs() {
@@ -1384,7 +1739,8 @@ function stopQrTimer() {
   if (qrTimer) { clearInterval(qrTimer); qrTimer = null; }
 }
 
-const QR_BTN_TEXT = '📱 扫码连接（推荐）';
+// 按钮文案带图标：图标是 SVG，重置时一并写回去（textContent 会把图标吃掉）
+const QR_BTN_TEXT = SVG.qr + ' 扫码连接（推荐）';
 
 async function startQr() {
   const btn = document.getElementById('qrBtn');
@@ -1392,7 +1748,7 @@ async function startQr() {
   if (qrTimer) {                       // 正在等待扫码：再点一次 = 取消
     stopQrTimer();
     try { await api('/api/qr/cancel', 'POST', {}); } catch (e) {}
-    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    document.getElementById('qrBtn').innerHTML = QR_BTN_TEXT;
     document.getElementById('qrPanel').style.display = 'none';
     hint.textContent = '已取消扫码配对';
     return;
@@ -1406,7 +1762,7 @@ async function startQr() {
     document.getElementById('qrSub').textContent = r.svg
       ? ('名称 ' + r.name + ' · 密码 ' + r.password)
       : ('二维码组件不可用，请在手机上选「使用配对码配对设备」：密码 ' + r.password);
-    btn.textContent = '✕ 停止扫码配对';
+    btn.innerHTML = SVG.close + ' 停止扫码配对';
     hint.textContent = '已生成二维码，等待手机扫描…';
     qrTimer = setInterval(pollQr, 1500);
     pollQr();
@@ -1422,7 +1778,7 @@ async function pollQr() {
   hint.textContent = s.message || '';
   if (s.state === 'done') {
     stopQrTimer();
-    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    document.getElementById('qrBtn').innerHTML = QR_BTN_TEXT;
     setHint('扫码连接成功：' + (s.addr || ''), 9000);
     await checkStatus();
     const dev = devices.find(d => d.serial === s.addr)
@@ -1430,7 +1786,7 @@ async function pollQr() {
     if (dev) selectDevice(dev.serial);
   } else if (['failed', 'timeout', 'idle'].includes(s.state)) {
     stopQrTimer();
-    document.getElementById('qrBtn').textContent = QR_BTN_TEXT;
+    document.getElementById('qrBtn').innerHTML = QR_BTN_TEXT;
     if (s.state !== 'idle' && s.message) setHint(s.message, 12000);
   }
 }
@@ -1518,7 +1874,7 @@ async function discover(auto = false) {
     hint.textContent = '扫描失败: ' + e;
   }
   btn.disabled = false;
-  btn.textContent = '🔍 扫描局域网';
+  btn.innerHTML = SVG.search + ' 扫描局域网';
   if (target) {
     setScanItemState(target.addr, '连接中…', 'wait');
     await connectDevice(target.ip, target.port, {addr: target.addr});
@@ -1596,7 +1952,7 @@ async function deepDiscover() {
   deepBusy = true;
   document.getElementById('scanList').innerHTML = '';
   btn.disabled = false;           // 保持可点：再点一下就是停止
-  btn.textContent = '✕ 停止搜索';
+  btn.innerHTML = SVG.close + ' 停止搜索';
   hint.textContent = '正在搜索局域网设备 + mDNS（约 6 秒先出结果）…';
   const onProgress = st => {
     renderScanList(st.found || []);
@@ -1630,7 +1986,7 @@ async function deepDiscover() {
   }
   deepBusy = false;
   btn.disabled = false;
-  btn.textContent = '🧭 深度搜索';
+  btn.innerHTML = SVG.compass + ' 深度搜索';
 }
 
 /* ---------- USB 一键转无线 ---------- */
@@ -1750,21 +2106,21 @@ function makeAppItem(app, nameHtml, isQuick = false) {
   return div;
 }
 
-// 角标状态：快捷启动区显示 ×（移出），应用列表显示 ＋/✓（添加/已在其中）
+// 角标状态：快捷启动区显示关闭图标（移出），应用列表显示加号 / 对勾（添加 / 已在其中）
 function updateAddBtn(btn) {
   const pkg = btn.dataset.pkg;
   const isQuick = btn.dataset.quick === '1';
   if (isQuick) {
     btn.className = 'app-add quick';
-    btn.textContent = '×';
+    btn.innerHTML = SVG.close;
     btn.title = '移出快捷启动';
   } else if (quickList.includes(pkg)) {
     btn.className = 'app-add on';
-    btn.textContent = '✓';
+    btn.innerHTML = SVG.check;
     btn.title = '已在快捷启动，点击移除';
   } else {
     btn.className = 'app-add';
-    btn.textContent = '＋';
+    btn.innerHTML = SVG.plus;
     btn.title = '添加到快捷启动';
   }
 }
@@ -1777,7 +2133,9 @@ function renderQuick() {
   const grid = document.getElementById('quickGrid');
   const empty = document.getElementById('quickEmpty');
   grid.innerHTML = '';
-  document.getElementById('quickCount').textContent = quickList.length ? quickList.length + ' 个' : '';
+  // 带上上限，一眼能看出还能再加几个
+  document.getElementById('quickCount').textContent =
+    quickList.length ? quickList.length + ' / ' + QUICK_MAX + ' 个' : '';
   if (!quickList.length) {
     empty.style.display = 'block';
     return;
@@ -1794,6 +2152,10 @@ function renderQuick() {
 async function toggleQuick(pkg) {
   if (!activeDevice) return;
   const i = quickList.indexOf(pkg);
+  if (i < 0 && quickList.length >= QUICK_MAX) {
+    setHint('快捷启动最多 ' + QUICK_MAX + ' 个，先移出一个再加', 8000);
+    return;
+  }
   if (i >= 0) quickList.splice(i, 1);
   else quickList.push(pkg);
   quickMap[activeDevice] = quickList.slice();   // 快捷启动按设备各存一份
@@ -1992,7 +2354,7 @@ async function exportLog() {
   if (saved) setHint('日志已导出到：' + saved, 12000);
 }
 
-// 主页「↻ 刷新」：只重扫当前设备的应用列表，不弹窗打断
+// 主页「刷新」按钮：只重扫当前设备的应用列表，不弹窗打断
 async function refreshApps(ev) {
   if (ev) ev.stopPropagation();          // 别把抽屉一起展开/收起
   if (!activeDevice) { setHint('请先连接设备'); return; }
@@ -2045,17 +2407,17 @@ function updateLockBar(devs) {
   ubtn.classList.toggle('btn-done', !d.locked);
   if (d.locked) {
     ubtn.disabled = false;
-    ubtn.textContent = '🔓 解锁';
+    ubtn.innerHTML = SVG.unlock + ' 解锁';
     ubtn.title = d.pin_set
       ? '在后台点亮屏幕并静默输入密码'
       : '还没设置这台手机的锁屏密码：先到「设置 → 设备与连接 → 锁屏解锁」里填';
   } else {
     ubtn.disabled = true;
-    ubtn.textContent = '已解锁';
+    ubtn.innerHTML = SVG.unlock + ' 已解锁';
     ubtn.title = '手机屏幕当前未锁定';
   }
   sbtn.disabled = false;
-  sbtn.textContent = '📴 关闭物理屏幕';
+  sbtn.innerHTML = SVG.screenOff + ' 关闭物理屏幕';
   sbtn.title = '只关掉手机的显示，手机不会因此被锁上';
 }
 
@@ -2268,6 +2630,12 @@ async function deletePreset() {
 
 initDrawer();
 renderQuick();
+// 侧边栏折叠状态是纯界面偏好，放本地；主题在后端配置里（见 checkStatus）
+try {
+  if (localStorage.getItem('sidebarCollapsed') === '1') {
+    document.getElementById('sidebar').classList.add('collapsed');
+  }
+} catch (e) {}
 // 状态每 3 秒轮询一次：连接状态始终以 adb 实际在线的设备为准，不再依赖界面文案
 setInterval(checkStatus, 3000);
 checkStatus().then(autoDiscover);   // 未连接时启动后台扫描一次

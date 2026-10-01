@@ -14,7 +14,7 @@ import threading
 
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.8.0"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
@@ -209,6 +209,7 @@ DEFAULT_CONFIG = {
     "recent_devices": [],       # 最近连接过的设备 [{addr, ip, port, name, ts}]，最多 5 台
     "quick_launch": {},         # {设备序列号: [包名...]}；"*" 为无专属列表时的默认值
     "minimize_to_tray": False,  # 开启后点关闭不退出，而是收进系统托盘继续待命
+    "theme": "dark",            # 界面主题：dark=深色（默认），light=浅色
 }
 
 def load_config():
