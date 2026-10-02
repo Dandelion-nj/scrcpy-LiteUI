@@ -88,6 +88,9 @@ def _run():
 
     # 首次调用 adb 之前记下 adb 服务是否已在运行，退出时只关我们自己拉起来的那个
     device.note_adb_server_before_start()
+    # 投屏窗口右侧功能栏：winbar 只画按钮，动作交给 device 去发 adb。
+    # 在这里接线是因为 winbar 不能反向 import device（device 已经 import 了 winbar）。
+    winbar.set_action_handler(device.winbar_action)
 
     if not _webview2_available():
         if _show_message("缺少 Microsoft Edge WebView2 运行时，界面无法显示。\n\n"

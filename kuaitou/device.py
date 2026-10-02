@@ -352,7 +352,7 @@ def build_scrcpy_cmd(pkg=None, serial=None, title=None):
         "--flex-display",
         "--stay-awake",
     ]
-    cmd += _window_args(cfg) + _stream_args(cfg) + _video_args(cfg)
+    cmd += _stream_args(cfg) + _video_args(cfg) + _mode_args(cfg)
     if cfg.get("always_on_top"):
         cmd.append("--always-on-top")
     if audio_mode == "phone":
@@ -366,87 +366,6 @@ def build_scrcpy_cmd(pkg=None, serial=None, title=None):
         cmd.append("--no-vd-system-decorations")   # 虚拟屏里不画状态栏/导航栏
         cmd.append(f"--start-app={pkg}")
     return cmd
-
-def _window_args(cfg):
-    """投屏窗口的初始位置：沿用上次关窗口时记下的坐标，没有就交给 scrcpy 自己挑（auto）。
-
-    以前这里写死 --window-x=600 --window-y=50：用户把窗口挪走，下次投屏又跳回原处；
-    小屏或改了显示器布局的电脑上，那个坐标还可能正好落在屏幕外面。
-    配置里存的是逻辑坐标（Windows 报给我们的那套），scrcpy 要的是物理像素，这里换算。
-    """
-    pos = _saved_window_pos(cfg)
-    if not pos:
-        return []
-    scale = _screen_scale()
-    return ["--window-x=%d" % int(round(pos[0] * scale)),
-            "--window-y=%d" % int(round(pos[1] * scale))]
-
-def _screen_scale():
-    """物理像素 ÷ 逻辑像素（Windows 显示缩放比例）。
-
-    本进程不是 DPI 感知的，Windows 会把屏幕尺寸和窗口坐标都按缩放比例虚拟化后再给我们，
-    而 scrcpy 摆窗口用的是物理像素。所以存位置用逻辑坐标、用位置时换算成物理像素；
-    反过来的话（存物理），200% 缩放下每次记录都要经过一次取整，位置会一趟趟往右下漂。
-    不改进程的 DPI 感知：那会把整套界面尺寸和 pywebview 窗口一起卷进来，不值得。
-    """
-    try:
-        gdi32 = ctypes.windll.gdi32
-        hdc = gdi32.CreateDCW("DISPLAY", None, None, None)
-        try:
-            phys = gdi32.GetDeviceCaps(hdc, 118)        # DESKTOPHORZRES：物理宽度
-        finally:
-            gdi32.DeleteDC(hdc)
-        logical = ctypes.windll.user32.GetSystemMetrics(0)
-        if phys > 0 and logical > 0:
-            return phys / float(logical)
-    except Exception:
-        pass
-    return 1.0
-
-def _window_client_pos(hwnd):
-    """窗口客户区左上角的位置（本进程的逻辑坐标）。
-
-    取客户区而不是整窗矩形：SDL 设的就是客户区位置，存客户区才能原样还原，不会每次
-    都往左上偏一个边框的宽度。也用不着换算缩放：Windows 报给我们的就是逻辑坐标，
-    存它，下次乘回缩放比例，一来一回刚好对上。
-    """
-    try:
-        user32 = ctypes.windll.user32
-        pt = wintypes.POINT(0, 0)
-        if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
-            return None
-        return int(pt.x), int(pt.y)
-    except Exception:
-        return None
-
-def _saved_window_pos(cfg):
-    try:
-        x = int(str(cfg.get("window_x", "")).strip())
-        y = int(str(cfg.get("window_y", "")).strip())
-    except (TypeError, ValueError):
-        return None
-    return (x, y) if _pos_reachable(x, y) else None
-
-def _pos_reachable(x, y):
-    """这个坐标是否还落在可见的虚拟桌面上（多显示器合起来算一块，负坐标也算数）。
-
-    存的是上次投屏时的位置：换过显示器 / 改过分辨率之后，旧坐标可能已经在屏幕之外，
-    再沿用就等于「投屏窗口打开了却看不见」。留一点余量，方便用户拖回来。
-
-    现在窗口带原生标题栏，标题栏算在窗口矩形内部，上沿不需要再额外让出高度；只要求
-    标题栏那一条（也就是窗口左上角）还落在桌面范围内，用户就能拖回来。
-    """
-    try:
-        user32 = ctypes.windll.user32
-        # SM_XVIRTUALSCREEN / YVIRTUALSCREEN / CXVIRTUALSCREEN / CYVIRTUALSCREEN
-        vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
-        vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
-        if vw <= 0 or vh <= 0:
-            return False
-        return ((vx - 40 <= x <= vx + vw - 60)
-                and (vy - 10 <= y <= vy + vh - 30))
-    except Exception:
-        return False
 
 def _stream_args(cfg):
     """码率 / 帧率：镜像应用和镜像桌面共用，避免两边设置不一致。
@@ -469,6 +388,30 @@ def _video_args(cfg):
         max_size = 0
     if max_size > 0:
         args.append("--max-size=%d" % max_size)
+    return args
+
+def _mode_args(cfg):
+    """「怎么投、能不能控」这一类开关：镜像应用与镜像桌面共用。
+
+    跟 _stream_args / _video_args 一样共用一份，免得又出现「设置页改了但对桌面投屏没反应」
+    那种两条命令各拼一套的毛病。
+
+    除键盘外的几项都是 scrcpy 的**启动期**参数，改了要重新投屏才生效（设置页里标注了）。
+    """
+    # 键盘固定走 UHID：把电脑键盘直接当成手机的外设，打字就落在手机上，不依赖手机输入法。
+    # 按用户要求常开、界面上不给开关，所以不放进配置。
+    args = ["--keyboard=uhid"]
+    if cfg.get("no_control"):
+        # 只看不控：scrcpy 不再注入任何输入。注意功能栏上的按钮走的是 adb，
+        # 跟 scrcpy 的控制通道无关，开了这个照样会执行——按钮是用户明确点的。
+        args.append("--no-control")
+    if cfg.get("power_off_on_close"):
+        # 关窗熄屏：关掉投屏窗口时顺手关掉手机屏幕（不会锁屏，跟主页那个「关闭物理屏幕」是一回事）
+        args.append("--power-off-on-close")
+    if cfg.get("mouse_capture"):
+        # 鼠标捕获：鼠标变成相对模式、光标锁在窗口里，玩游戏那类场景才要。
+        # 默认关——开着的话普通点击拖动会变得很别扭，而且得按 scrcpy 的快捷键才能脱出。
+        args.append("--mouse=uhid")
     return args
 
 _VOLUME_STREAM = "3"        # STREAM_MUSIC：投屏抓的就是这一路
@@ -1057,18 +1000,24 @@ def launch_app(pkg, serial=None, title=None, icon_path=None):
         boost_media_volume(serial)
 
     cmd = build_scrcpy_cmd(pkg=pkg, serial=serial, title=title)
-    proc = _spawn(cmd, tag="镜像应用 %s @ %s" % (pkg, serial or "-"))
+    try:
+        proc = _spawn(cmd, tag="镜像应用 %s @ %s" % (pkg, serial or "-"))
+    except Exception:
+        # 投屏没起来（scrcpy.exe 被杀软拦了之类）：刚拉满的音量得还回去，
+        # 否则用户的手机会一直停在最大音量上，且没有任何东西会再还原它。
+        if audio_mode == "pc":
+            restore_media_volume(serial)
+        raise
     recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
-    target = _saved_window_pos(cfg)     # 这次要摆的位置（没有就交给 scrcpy 自己挑）
     with _mirror_lock:
         _mirror_procs[key] = proc
 
     def wait_and_kill():
         nudge_scrcpy_window(proc)
-        # 原生标题栏上的图标与「置顶」按钮由 winbar 叠加
-        winbar.attach(proc, icon_path=icon_path,
-                      always_on_top=cfg.get("always_on_top"))
-        _track_window_pos(proc, target)     # 摆正 + 盯着位置，退出时记下来，下次还开在这儿
+        # 窗口右侧的功能栏（含置顶、音量、横屏、返回那组）由 winbar 叠加
+        # serial / desktop 传下去：按钮要按设备下发 adb 命令，且只有镜像桌面才摆那组按键
+        winbar.attach(proc, icon_path=icon_path, always_on_top=cfg.get("always_on_top"),
+                      serial=serial, desktop=False)
         proc.wait()                     # 上面超时回来时兜底，保证等到进程真的结束
         with _mirror_lock:
             if _mirror_procs.get(key) is proc:
@@ -1092,7 +1041,7 @@ def launch_desktop(serial=None):
 
     cmd = ([SCRCPY_PATH] + _serial_args(serial)
            + ["--stay-awake", "--window-title=镜像桌面"]
-           + _window_args(cfg) + _stream_args(cfg) + _video_args(cfg))
+           + _stream_args(cfg) + _video_args(cfg) + _mode_args(cfg))
     if cfg.get("always_on_top"):
         cmd.append("--always-on-top")
     if audio_mode == "phone":
@@ -1100,12 +1049,17 @@ def launch_desktop(serial=None):
     elif audio_mode == "pc":
         boost_media_volume(serial)      # 同上：拉满手机音量，关窗口时还原
 
-    proc = _spawn(cmd, tag="镜像桌面 @ %s" % (serial or "-"))
+    try:
+        proc = _spawn(cmd, tag="镜像桌面 @ %s" % (serial or "-"))
+    except Exception:
+        if audio_mode == "pc":
+            restore_media_volume(serial)    # 同上：起不来就把音量还回去
+        raise
     recheck_boost_volume(serial)        # 投屏起来后回头看音量有没有被 ROM 拉回去
-    target = _saved_window_pos(cfg)     # 这次要摆的位置（没有就交给 scrcpy 自己挑）
+
     def wait_restore():
-        winbar.attach(proc, always_on_top=cfg.get("always_on_top"))
-        _track_window_pos(proc, target)     # 摆正 + 盯着位置，退出时记下来，下次还开在这儿
+        winbar.attach(proc, always_on_top=cfg.get("always_on_top"),
+                      serial=serial, desktop=True)
         proc.wait()                     # 上面超时回来时兜底，保证等到进程真的结束
         _close_child_log(proc.pid)
         restore_media_volume(serial)
@@ -1142,51 +1096,6 @@ def _wait_window(proc, timeout=15):
             return hwnd
         time.sleep(0.3)
     return None
-
-_SWP_NOSIZE, _SWP_NOZORDER, _SWP_NOACTIVATE = 0x0001, 0x0004, 0x0010
-
-def _move_window_client_to(hwnd, target):
-    """把窗口摆到指定位置，让客户区左上角正好落在 target（逻辑坐标）上。
-
-    scrcpy 已经按记下的位置开过窗了，这一步只是把那一两像素的偏差抹平：scrcpy 交给 SDL
-    的坐标要经过一次边框换算，屏幕缩放不是 100% 时会差个一两像素；每次都按窗口实际位置
-    回记的话，窗口会一趟趟往同一侧爬。SetWindowPos 定的是整窗位置，所以先量出客户区相对
-    整窗的偏移再减掉。
-    """
-    try:
-        user32 = ctypes.windll.user32
-        rect, pt = wintypes.RECT(), wintypes.POINT(0, 0)
-        if not (user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                and user32.ClientToScreen(hwnd, ctypes.byref(pt))):
-            return
-        dx, dy = int(pt.x) - rect.left, int(pt.y) - rect.top
-        user32.SetWindowPos(hwnd, 0, target[0] - dx, target[1] - dy, 0, 0,
-                            _SWP_NOSIZE | _SWP_NOZORDER | _SWP_NOACTIVATE)
-    except Exception:
-        pass
-
-def _track_window_pos(proc, target=None, timeout=25):
-    """投屏期间记下窗口位置，进程退出时把最后的坐标写进配置，下次沿用它开窗。
-
-    等窗口出现了才开始记；最小化 / 最大化时的矩形不代表用户挑的位置，跳过不记。
-    target 是这次要摆的位置，窗口一出来就校正过去（用户还没动过，不会跟他抢）。
-    """
-    hwnd = _wait_window(proc, timeout=timeout)
-    if not hwnd:
-        return
-    if target:
-        _move_window_client_to(hwnd, target)
-    user32 = ctypes.windll.user32
-    last = None
-    while proc.poll() is None:
-        try:
-            if not user32.IsIconic(hwnd) and not user32.IsZoomed(hwnd):
-                last = _window_client_pos(hwnd) or last
-        except Exception:
-            pass
-        time.sleep(1.0)
-    if last:
-        save_config({"window_x": str(last[0]), "window_y": str(last[1])})
 
 def focus_proc_window(proc):
     """把投屏窗口从最小化 / 别的窗口后面唤到前台。返回是否找到并唤起。"""
@@ -1307,6 +1216,8 @@ def shutdown_all():
     release_lock_timeout(None)
     # 拉满的手机音量同理：关窗会直接 os._exit，等投屏线程收尾来不及，这里先还
     restore_all_media_volume()
+    # 功能栏的「强制横屏」关掉过系统的自动旋转，同样必须还
+    release_rotate_lock(None)
     winbar.shutdown()
     cleanup_scrcpy()
     _kill_children()
@@ -1329,6 +1240,93 @@ def _launch_result(proc, seconds=3.0):
                     "error": tail or ("scrcpy 启动后立即退出（返回码 %s）" % proc.returncode)}
         time.sleep(0.1)
     return {"ok": True}
+
+
+# ---------- 投屏窗口右侧功能栏：按钮对应的手机侧动作 ----------
+# winbar 只负责画按钮和判命中，它不认识 adb（device 已经 import 了 winbar，反过来会循环）。
+# 所以由入口 launcher_server.py 把 winbar_action 注入进去，动作名到命令的映射留在这里。
+
+_KEYEVENT = {"back": "4", "home": "3", "app_switch": "187"}
+_VOLUME_KEY = {"volume_down": "25", "volume_up": "24"}
+_PANEL = {"notifications": "expand-notifications", "control_center": "expand-settings"}
+
+def _log_action(msg):
+    """功能栏动作的结果写进投屏日志：窗口程序没有控制台，按钮「点了没反应」时只能靠它复盘。"""
+    storage_write(LAUNCH_LOG_STREAM,
+                  "\n[winbar %s] %s\n" % (time.strftime("%H:%M:%S"), msg), append=True)
+
+# 「强制横屏」要临时关掉系统自动旋转（不然设了 user_rotation 也会被传感器顶回去）。
+# 改的是用户手机上的全局设置，所以先记原值，再点一次或退出程序时都必须还回去——
+# 跟「拉满手机音量」「顶长熄屏超时」是同一个道理。
+_rotate_saved = {}              # 序列号 -> (accelerometer_rotation, user_rotation) 原值
+_rotate_lock = threading.Lock()
+
+def _rotation_mode(serial):
+    """读这台设备当前的 (自动旋转, 用户旋转) 原值；读不到就用系统默认的 1 / 0。"""
+    vals = []
+    for key in ("accelerometer_rotation", "user_rotation"):
+        out, _, code = run_adb(["shell", "settings", "get", "system", key],
+                               timeout=6, serial=serial)
+        val = out.strip()
+        vals.append(val if code == 0 and val.isdigit() else "")
+    return (vals[0] or "1", vals[1] or "0")
+
+def _set_rotate(serial, auto, rotation):
+    run_adb(["shell", "settings", "put", "system", "accelerometer_rotation", auto],
+            timeout=6, serial=serial)
+    run_adb(["shell", "settings", "put", "system", "user_rotation", rotation],
+            timeout=6, serial=serial)
+
+def toggle_rotate_lock(serial=None):
+    """强制横屏的开关。返回切换后是否处于「锁定横屏」。"""
+    key = serial or ""
+    with _rotate_lock:
+        saved = _rotate_saved.pop(key, None)
+        if saved is None:
+            auto, rot = _rotation_mode(serial)
+            _rotate_saved[key] = (auto, rot)
+            _set_rotate(serial, "0", "1")          # 关掉自动旋转 + 转成横屏
+            _log_action("强制横屏 -> 开（原值 %s/%s）" % (auto, rot))
+            return True
+        auto, rot = saved
+        _set_rotate(serial, auto, rot)
+        _log_action("强制横屏 -> 关，已还原 %s/%s" % (auto, rot))
+        return False
+
+def release_rotate_lock(serial=None):
+    """把强制横屏还回去。serial=None 表示所有设备都还（退出时用）。"""
+    if serial is None:
+        with _rotate_lock:
+            keys = list(_rotate_saved)
+    else:
+        keys = [serial] if (serial or "") in _rotate_saved else []
+    for k in keys:
+        try:
+            toggle_rotate_lock(k or None)
+        except Exception:
+            pass
+
+def winbar_action(serial, action):
+    """功能栏上按下的动作 -> 手机侧命令。由 launcher_server 注入给 winbar。
+
+    winbar 已经在自己的后台线程里调它了，这里不再开线程。这些命令走 adb，
+    与 scrcpy 的控制通道无关——所以「只看不控」开着的时候它们照样生效
+    （按钮是用户明确点的，不是误触）。
+    """
+    try:
+        if action in _VOLUME_KEY:
+            run_adb(["shell", "input", "keyevent", _VOLUME_KEY[action]], timeout=6, serial=serial)
+        elif action == "rotate_lock":
+            toggle_rotate_lock(serial)
+        elif action in _KEYEVENT:
+            run_adb(["shell", "input", "keyevent", _KEYEVENT[action]], timeout=6, serial=serial)
+        elif action in _PANEL:
+            # Android 7+ 的 statusbar 服务：展开通知栏 / 展开快捷设置面板
+            run_adb(["shell", "cmd", "statusbar", _PANEL[action]], timeout=6, serial=serial)
+        else:
+            _log_action("未知动作：%s" % action)
+    except Exception as e:
+        _log_action("动作 %s 执行失败：%r" % (action, e))
 
 
 # ---------- 供入口（launcher_server.py）调用的接口 ----------

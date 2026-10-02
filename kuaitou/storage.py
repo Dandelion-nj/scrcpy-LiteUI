@@ -11,10 +11,11 @@ import json
 import os
 import sys
 import threading
+import time
 
 # 版本号：显示在设置页底部和诊断报告里。exe 被拷到多台电脑排查问题时，
 # 靠它一眼就能确认两边跑的是不是同一个版本。
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
 
 # 路径解析：PyInstaller 打包后，随包资源解包到只读临时目录（sys._MEIPASS）；
 # 用户数据不再落成散落文件，而是写进 exe 自身的 NTFS 数据流（见下方存储层）。
@@ -204,31 +205,41 @@ DEFAULT_CONFIG = {
     "reconnect_enabled": True,  # 无线掉线后后台自动重连（退避 + 次数上限）
     "autostart": False,         # 开机自启：静默启动，只驻托盘
     "always_on_top": False,     # 投屏窗口置顶（镜像应用时一边看手机一边干别的）
-    "window_x": "",             # 上次关掉投屏窗口时的位置，下次沿用它开窗；空 = 让 scrcpy 自己挑
-    "window_y": "",
+    "no_control": False,        # 只看不控：scrcpy 不注入任何输入（防误触手机）
+    "power_off_on_close": False,  # 关窗熄屏：关掉投屏窗口时顺手关掉手机屏幕（省电）
+    "mouse_capture": False,     # 鼠标捕获：电脑鼠标变成相对模式（--mouse=uhid）
     "recent_devices": [],       # 最近连接过的设备 [{addr, ip, port, name, ts}]，最多 5 台
     "quick_launch": {},         # {设备序列号: [包名...]}；"*" 为无专属列表时的默认值
     "minimize_to_tray": False,  # 开启后点关闭不退出，而是收进系统托盘继续待命
     "theme": "light",           # 界面主题：light=浅色（默认），dark=深色
 }
 
+def _merge_builtin(merged):
+    """把随包内置的那份默认配置叠上去（首次运行时用）。"""
+    try:
+        if os.path.exists(BUILTIN_CONFIG_FILE):
+            with open(BUILTIN_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                merged.update(json.load(f))
+    except Exception:
+        pass
+
+
 def load_config():
     merged = DEFAULT_CONFIG.copy()
-    # 先读用户配置（EXE 数据流，或 ADS 不可用时的 exe 同目录文件）；
-    # 缺失或不合法时回落到随包内置的默认配置
+    # 先读用户配置（EXE 数据流，或 ADS 不可用时的 exe 同目录文件）
     raw = storage_read(CONFIG_STREAM)
-    if raw:
-        try:
-            merged.update(json.loads(raw))
-        except Exception:
-            pass
+    if raw is None:
+        # 从没存过：首次运行，用随包内置的默认配置
+        _merge_builtin(merged)
     else:
         try:
-            if os.path.exists(BUILTIN_CONFIG_FILE):
-                with open(BUILTIN_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    merged.update(json.load(f))
-        except Exception:
-            pass
+            merged.update(json.loads(raw))
+        except Exception as e:
+            # 存过却解析不出来 = 配置坏了（写了一半断电、被别的程序改过等）。
+            # 这里必须留痕：静默回落成默认值会让用户以为「设置莫名其妙全丢了」，
+            # 却一点线索都没有。
+            log_error("配置读不出来，已回落到默认值：%r" % (e,))
+            _merge_builtin(merged)
     # 旧版快捷启动是一个列表（全局共用），统一成 {设备: [...]} 结构，用 "*" 兜底
     ql = merged.get("quick_launch")
     if isinstance(ql, list):
@@ -242,17 +253,26 @@ _config_lock = threading.Lock()
 def save_config(cfg):
     """合并写入配置：先读当前配置再改，所以整个过程要串行。
 
-    HTTP 请求是多线程处理的，投屏窗口关掉时后台线程也会写一次（记窗口位置）——
+    HTTP 请求是多线程处理的，后台线程也会写配置（投屏窗口的置顶状态等）——
     两边同时「读-改-写」会把对方的改动冲掉（比如刚存的画面设置被覆盖回旧值）。
+
+    返回是否真的写进去了。失败必须往上冒：界面要如实说「没保存成功」，而不是照常
+    弹一句「已保存」——配置是直接覆盖写的（ADS 不支持 os.replace），写坏了用户
+    没有任何机会发现。
     """
     try:
         with _config_lock:
             current = load_config()
             current.update(cfg)
-            storage_write(CONFIG_STREAM,
-                          json.dumps(current, ensure_ascii=False, indent=2))
-    except Exception:
-        pass
+            path, _ads = storage_write(CONFIG_STREAM,
+                                       json.dumps(current, ensure_ascii=False, indent=2))
+            if not path:
+                log_error("配置写入失败，本次改动没有保存：%r" % (sorted(cfg),))
+                return False
+            return True
+    except Exception as e:
+        log_error("配置写入异常，本次改动没有保存：%r" % (e,))
+        return False
 
 def _write_text(stream, text):
     """文本类小文件（错误日志 / 扫描日志）：优先写进 EXE 数据流，返回实际路径。"""
@@ -261,3 +281,23 @@ def _write_text(stream, text):
 
 def _read_log_tail(stream, limit=1200):
     return (storage_read(stream) or "")[-limit:]
+
+def log_error(text):
+    """往错误日志追一条。
+
+    用于「出了事但用户在界面上看不到」的场景（配置写失败、配置读坏了等）：
+    这类问题不影响程序继续跑，正因为如此才更需要留痕，否则用户只能看到
+    「设置莫名其妙没生效」，无从查起。走 storage_open_append 顺带拿到日志轮转。
+    """
+    f = storage_open_append(ERROR_LOG_STREAM)
+    if not f:
+        return
+    try:
+        f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+    except Exception:
+        pass
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass

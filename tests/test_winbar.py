@@ -1,9 +1,12 @@
-"""原生标题栏增强：纯逻辑部分（登记表、按钮命中、布局避让系统按钮）。
+"""叠加条（投屏窗口右侧功能栏）：纯逻辑部分（布局、命中、悬停展开、动作转发）。
 
-真实的窗口 / DWM / GDI 绘制不在这里测 —— 那要靠真机投屏实测。测试只保证不依赖
-Windows 消息循环的那几段算术是对的（它们错了用户就点不中按钮、或者按钮盖到系统按钮上），
-以及「哪件事只该做一次」这类调度判断。
+真实的窗口 / GDI 绘制不在这里测 —— 那要靠真机投屏实测。测试只保证不依赖 Windows
+消息循环的那几段算术是对的（它们错了用户就点不中按钮、或者按钮溢出到条带外面），
+以及「哪些事只该做一次」「哪些动作该转出去」这类调度判断。
 """
+
+import ctypes
+import time
 
 import pytest
 
@@ -42,24 +45,48 @@ class _FakeProc:
 
 
 class _FakeBar:
-    """_btn_at / _layout 只关心 target、scale、btns、band，不必造真的 _Bar。"""
+    """_btn_at / _layout / _update_open / _run_action 只关心这几个字段，不必造真的 _Bar。"""
 
     def __init__(self, target=None, scale=1.0):
         self.target = target
         self.scale = scale
+        self.serial = None
+        self.desktop = False
+        self.open = True
+        self.rotate_on = False
+        self.hwnd = None
+        self.hot = -1
+        self.pressed = -1
         self.btns = []
+        self.actions = []
         self.band = None
 
 
-class _FakeUser32:
-    """_layout 要先看窗口样式里有没有 WS_CAPTION，测试里给个固定答案。"""
+class _FakeCursorApi:
+    """_update_open 靠 GetCursorPos 自己判光标位置：给个固定坐标的假实现。"""
 
-    def __init__(self, style=winbar._WS_CAPTION):
-        self.style = style
+    def __init__(self, x, y, ok=True):
+        self.pt = winbar.wintypes.POINT(x, y)
+        self.ok = ok
 
-    def GetWindowLongW(self, hwnd, index):
-        assert index == winbar._GWL_STYLE
-        return self.style
+    def GetCursorPos(self, ref):
+        if not self.ok:
+            return False
+        ctypes.memmove(ref, ctypes.byref(self.pt), ctypes.sizeof(self.pt))
+        return True
+
+
+class _FakePaintApi:
+    def InvalidateRect(self, *args):
+        return True
+
+
+@pytest.fixture(autouse=True)
+def _reset_action_handler():
+    """动作执行器是模块级状态，注入过就会留给下一个用例。"""
+    winbar.set_action_handler(None)
+    yield
+    winbar.set_action_handler(None)
 
 
 def test_rgb_is_colorref_not_web_order():
@@ -146,7 +173,7 @@ def test_theme_switch_skips_window_chrome(monkeypatch):
 
 
 def test_btn_at_hits_the_pin_button():
-    """现在只剩一个「置顶」按钮，命中范围仍按闭区间算（右下角也算按钮内）。"""
+    """命中按闭区间算：右下角那一个像素也算在按钮内。"""
     bar = _FakeBar()
     bar.btns = [(10, 20, 40, 60)]
     assert winbar._btn_at(bar, 11, 30) == 0
@@ -167,57 +194,121 @@ def test_btn_at_without_layout_is_minus_one():
     assert winbar._btn_at(_FakeBar(), 0, 5) == -1
 
 
-def test_layout_places_button_just_left_of_system_buttons(monkeypatch):
-    """按钮必须紧挨在系统按钮左边，右边一格都不重叠。"""
-    boxes = [
-        winbar.wintypes.RECT(1000, 20, 1094, 77),
-        winbar.wintypes.RECT(1100, 20, 1194, 77),
-        winbar.wintypes.RECT(1200, 20, 1294, 77),
-    ]
-    monkeypatch.setattr(winbar, "_user32", _FakeUser32())
-    monkeypatch.setattr(winbar, "_sys_buttons", lambda hwnd: boxes)
+def _patch_client_rect(monkeypatch, rect):
+    monkeypatch.setattr(winbar, "_client_screen_rect", lambda hwnd: rect)
+
+
+def test_bar_actions_are_fewer_for_app_mirroring():
+    """镜像应用开的是虚拟屏：返回 / 桌面 / 多任务 / 通知栏 / 控制中心打到手机真实界面上没意义。"""
+    common = winbar._bar_actions(False)
+    assert common == ("pin", "volume_up", "volume_down", "rotate_lock")
+    assert winbar._bar_actions(True) == common + (
+        "back", "home", "app_switch", "notifications", "control_center")
+
+
+def test_layout_sticks_strip_to_right_edge(monkeypatch):
+    """展开时贴画面右边缘、按钮竖着排开，而且个个都落在条带里。"""
+    _patch_client_rect(monkeypatch, (100, 200, 700, 1000))
     bar = _FakeBar(target=1, scale=1.0)
+    bar.desktop = True
     assert winbar._layout(bar) is True
 
-    assert len(bar.btns) == 1
-    btn = bar.btns[0]
-    assert btn[2] == 1000                                    # 右端正好顶到系统按钮左沿
-    assert (btn[1], btn[3]) == (20, 77)                      # 上下与系统按钮齐平
-    assert bar.band == (btn[0], 20, 1000, 77)
+    x1, y1, x2, y2 = bar.band
+    assert x2 == 700                                        # 右端贴住画面
+    assert (y1, y2) == (200 + winbar._STRIP_PAD, 1000 - winbar._STRIP_PAD)
+    assert len(bar.btns) == len(bar.actions) == 9
+    for bx1, by1, bx2, by2 in bar.btns:
+        assert x1 <= bx1 < bx2 <= x2
+        assert y1 <= by1 < by2 <= y2
+    assert [b[1] for b in bar.btns] == sorted(b[1] for b in bar.btns)   # 自上而下
 
 
-def test_layout_uses_system_button_width_for_look_and_feel(monkeypatch):
-    """按钮宽度照抄系统按钮，看起来才像一家的。"""
-    boxes = [winbar.wintypes.RECT(1000, 20, 1094, 77),
-             winbar.wintypes.RECT(1100, 20, 1194, 77),
-             winbar.wintypes.RECT(1200, 20, 1294, 77)]
-    monkeypatch.setattr(winbar, "_user32", _FakeUser32())
-    monkeypatch.setattr(winbar, "_sys_buttons", lambda hwnd: boxes)
+def test_layout_collapsed_leaves_no_buttons(monkeypatch):
+    """收起态只留贴边一条细条，且一个按钮都没有——否则会点到看不见的东西。"""
+    _patch_client_rect(monkeypatch, (100, 200, 700, 1000))
     bar = _FakeBar(target=1, scale=1.0)
-    winbar._layout(bar)
-    x1, _, x2, _ = bar.btns[0]
-    assert (x2 - x1) == (1294 - 1000) // 3                   # 98，等于系统按钮均宽
-
-
-def test_layout_returns_false_without_titlebar(monkeypatch):
-    """量不到系统按钮（窗口刚起来等）：布局失败，退回去重试。"""
-    monkeypatch.setattr(winbar, "_user32", _FakeUser32())
-    monkeypatch.setattr(winbar, "_sys_buttons", lambda hwnd: [])
-    bar = _FakeBar(target=1)
-    assert winbar._layout(bar) is False
+    bar.open = False
+    assert winbar._layout(bar) is True
+    sx1, _, sx2, _ = bar.band
+    assert sx2 - sx1 == winbar._STRIP_EDGE
     assert bar.btns == []
-    assert bar.band is None
+    assert bar.actions == []
 
 
-def test_layout_returns_false_when_fullscreen(monkeypatch):
-    """全屏时窗口没有 WS_CAPTION：直接不摆按钮，也不能去问系统（那边会回一堆坏矩形）。"""
-    called = []
-    monkeypatch.setattr(winbar, "_user32", _FakeUser32(style=winbar._WS_POPUP))
-    monkeypatch.setattr(winbar, "_sys_buttons",
-                        lambda hwnd: called.append(hwnd) or [])
-    bar = _FakeBar(target=1)
+def test_layout_gives_up_when_window_too_short(monkeypatch):
+    """窗口太矮就别硬塞：宁可不摆，也别拿一排按钮糊住小半个画面。"""
+    _patch_client_rect(monkeypatch, (0, 0, 600, 60))
+    bar = _FakeBar(target=1, scale=1.0)
+    bar.desktop = True
     assert winbar._layout(bar) is False
-    assert called == []                                      # 压根没问系统
+
+
+def test_layout_gives_up_without_client_rect(monkeypatch):
+    """拿不到客户区（窗口刚起来 / 已经没了）：返回 False，退回定时器稍后重试。"""
+    _patch_client_rect(monkeypatch, None)
+    assert winbar._layout(_FakeBar(target=1)) is False
+
+
+def test_hover_opens_immediately_and_collapses_after_delay(monkeypatch):
+    """鼠标扫到右边缘就展开；移开后要等一会儿才收起，不然一抖就收、根本点不到。"""
+    bar = _FakeBar(target=1, scale=1.0)
+    bar.open = False
+    bar.band = (600, 200, 700, 1000)
+
+    monkeypatch.setattr(winbar, "_user32", _FakeCursorApi(680, 500))    # 判定区里
+    winbar._update_open(bar)
+    assert bar.open is True
+
+    monkeypatch.setattr(winbar, "_user32", _FakeCursorApi(10, 500))     # 移开
+    winbar._update_open(bar)
+    assert bar.open is True, "刚移开不能立刻收，得留出点到按钮的时间"
+    assert bar.close_at > 0
+
+    bar.close_at = time.time() - 1                                      # 假装延迟已到
+    winbar._update_open(bar)
+    assert bar.open is False
+
+
+def test_run_action_pin_stays_local(monkeypatch):
+    """置顶是纯窗口操作，不该绕道去发 adb。"""
+    forwarded = []
+    winbar.set_action_handler(lambda serial, action: forwarded.append(action))
+    monkeypatch.setattr(winbar, "_act_pin", lambda bar: forwarded.append("local-pin"))
+    winbar._run_action(_FakeBar(target=1), "pin")
+    assert forwarded == ["local-pin"]
+
+
+def test_run_action_forwards_with_serial(monkeypatch):
+    """其余动作要带着设备序列号转出去——发错设备的 adb 命令就麻烦了。"""
+    seen = []
+    winbar.set_action_handler(lambda serial, action: seen.append((serial, action)))
+    bar = _FakeBar(target=1)
+    bar.serial = "192.168.1.5:5555"
+    winbar._run_action(bar, "back")
+
+    deadline = time.time() + 5
+    while not seen and time.time() < deadline:
+        time.sleep(0.01)
+    assert seen == [("192.168.1.5:5555", "back")]
+
+
+def test_run_action_without_handler_is_survivable(monkeypatch):
+    """忘了注入执行器也只是点了没反应，不能把消息循环带崩。"""
+    logged = []
+    monkeypatch.setattr(winbar, "_log", logged.append)
+    winbar._run_action(_FakeBar(target=1), "home")
+    assert logged and "home" in logged[0]
+
+
+def test_rotate_button_toggles_highlight(monkeypatch):
+    """强制横屏的按钮要能看出当前是开着还是关着。"""
+    winbar.set_action_handler(lambda serial, action: None)
+    monkeypatch.setattr(winbar, "_user32", _FakePaintApi())
+    bar = _FakeBar(target=1)
+    winbar._run_action(bar, "rotate_lock")
+    assert bar.rotate_on is True
+    winbar._run_action(bar, "rotate_lock")
+    assert bar.rotate_on is False
 
 
 def test_icon_source_prefers_app_icon(tmp_path):

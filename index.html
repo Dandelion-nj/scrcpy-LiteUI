@@ -375,6 +375,30 @@ html.no-anim, html.no-anim * { transition: none !important; animation: none !imp
 .pin-row .btn { flex-shrink: 0; }
 
 #hintText { color: var(--accent); }
+#hintText.err { color: var(--red); }
+
+/* 键盘可见焦点。原来只有输入框有 :focus，按钮、侧边栏项、应用卡片用 Tab 走到
+   完全看不出焦点在哪，等于没法纯键盘操作。 */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.btn:focus-visible, .nav-item:focus-visible, .app-card:focus-visible { outline-offset: 1px; }
+
+/* 页内确认弹窗。不用浏览器原生 confirm()：它在 WebView2 里跟界面完全脱节，也不跟主题 */
+.modal-mask { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, .45);
+  display: flex; align-items: center; justify-content: center; }
+.modal-mask[hidden] { display: none; }
+.modal-card { width: 340px; max-width: calc(100vw - 40px); background: var(--card);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px;
+  box-shadow: var(--shadow); }
+.modal-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.modal-desc { margin-top: 8px; font-size: 13px; line-height: 1.6; color: var(--text-dim); }
+.modal-actions { margin-top: 18px; display: flex; justify-content: flex-end; gap: 8px; }
+.btn-danger { background: var(--red); color: #fff; border-color: transparent; }
+.btn-danger:hover { filter: brightness(1.08); }
+
+/* 「需重新投屏生效」小标记：这些设置是 scrcpy 的启动期参数，改完不重投等于没改 */
+.need-replay { margin-left: 8px; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+  font-weight: 500; color: var(--text-dim); background: var(--bg);
+  border: 1px solid var(--border); vertical-align: middle; }
 
 .section {
   background: var(--card);
@@ -409,6 +433,13 @@ html.no-anim, html.no-anim * { transition: none !important; animation: none !imp
 }
 .settings-item-title { font-size: 13px; margin-bottom: 4px; }
 .settings-item-desc { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+/* 同一个板块里的多个功能项之间画一道分割线，跟「虚拟屏」那块用的 .sub-divider 一致
+   （1px 的 --border、上下各留 14px）。以前多个开关是紧挨着的，糊成一坨、看不出是几件事。 */
+.settings-item + .settings-item {
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 14px;
+}
 .switch { position: relative; display: inline-block; width: 44px; height: 24px; flex-shrink: 0; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider {
@@ -1015,14 +1046,34 @@ mark {
       </div>
 
       <div class="section">
-        <div class="section-title">投屏窗口</div>
+        <div class="section-title">投屏窗口 <span class="need-replay">需重新投屏生效</span></div>
         <div class="settings-item">
           <div>
-            <div class="settings-item-title">投屏窗口置顶</div>
-            <div class="settings-item-desc">投屏窗口始终压在其他窗口上面，适合一边看着手机画面一边在电脑上干别的；对「镜像应用」和「镜像桌面」都生效。窗口位置会被记住，下次投屏还开在原来的地方。投屏窗口的标题栏上还叠着一个置顶按钮，点它就能当场切换，不用回来改这里。</div>
+            <div class="settings-item-title">只看不控</div>
+            <div class="settings-item-desc">投屏窗口只显示画面，在画面上点击、打字都不再传到手机，防止误触。注意右侧功能栏的那些按键走的是另一条通道，不受这里影响——它们是你明确点的，不是误触。</div>
           </div>
           <label class="switch">
-            <input type="checkbox" id="always_on_top" onchange="saveAlwaysOnTop(this.checked)">
+            <input type="checkbox" id="no_control" onchange="saveNoControl(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">关窗熄屏</div>
+            <div class="settings-item-desc">投屏窗口一关，顺手把手机屏幕也熄掉（只关显示、不会锁定，跟主页那个「关闭物理屏幕」是一回事），省电。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="power_off_on_close" onchange="savePowerOffOnClose(this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="settings-item">
+          <div>
+            <div class="settings-item-title">鼠标捕获</div>
+            <div class="settings-item-desc">把电脑鼠标变成相对模式、光标锁在投屏窗口里，玩游戏时鼠标移动直接落到手机上。打开后要按 scrcpy 的快捷键才能脱出，平时不用开。键盘一直是直通手机的，不需要设置。</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="mouse_capture" onchange="saveMouseCapture(this.checked)">
             <span class="slider"></span>
           </label>
         </div>
@@ -1125,6 +1176,19 @@ mark {
 </div>
 </div><!-- /.content -->
 </div><!-- /.shell -->
+
+<!-- 破坏性操作的二次确认。做成页内弹窗而不是浏览器原生 confirm()：原生弹窗在 WebView2 里
+     样式跟界面完全脱节、也不跟主题。 -->
+<div class="modal-mask" id="confirmMask" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-title" id="confirmTitle"></div>
+    <div class="modal-desc" id="confirmDesc"></div>
+    <div class="modal-actions">
+      <button class="btn" id="confirmNo" type="button">取消</button>
+      <button class="btn btn-danger" id="confirmYes" type="button">确定</button>
+    </div>
+  </div>
+</div>
 
 <script>
 let allApps = [];              // 当前标签页设备的应用列表
@@ -1372,12 +1436,56 @@ async function saveTheme(on) {
 
 /* ---------- 瞬时提示（与连接状态分离，避免互相覆盖）---------- */
 let hintTimer = null;
-function setHint(text, ms = 6000) {
+function setHint(text, ms = 6000, kind = '') {
   const el = document.getElementById('hintText');
   el.textContent = text || '';
+  el.classList.toggle('err', kind === 'err');   // 失败提示要显眼：别让人以为存上了
   if (hintTimer) clearTimeout(hintTimer);
   // ms 为 0 表示一直显示到下次提示（等待授权这类需要持续可见的状态）
   if (text && ms > 0) hintTimer = setTimeout(() => { el.textContent = ''; }, ms);
+}
+
+// 存配置的唯一入口。后端写不进去会如实回 ok:false —— 那时绝不能说「已保存」，
+// 否则用户以为改好了，下次打开发现全变回去了，还查不出原因。
+async function saveConfigPatch(patch, hintText) {
+  const r = await api('/api/config', 'POST', patch);
+  if (r && r.ok === false) {
+    setHint(r.error || '设置没有保存成功', 15000, 'err');
+    return false;
+  }
+  if (hintText) setHint(hintText, 9000);
+  return true;
+}
+
+/* ---------- 破坏性操作的二次确认 ---------- */
+let confirmResolve = null;
+
+function askConfirm(title, desc, okText) {
+  document.getElementById('confirmTitle').textContent = title;
+  document.getElementById('confirmDesc').textContent = desc;
+  document.getElementById('confirmYes').textContent = okText || '确定';
+  document.getElementById('confirmMask').hidden = false;
+  document.getElementById('confirmNo').focus();     // 焦点默认落在「取消」上，回车不会误删
+  return new Promise(res => { confirmResolve = res; });
+}
+
+function closeConfirm(ok) {
+  document.getElementById('confirmMask').hidden = true;
+  const r = confirmResolve;
+  confirmResolve = null;
+  if (r) r(!!ok);
+}
+
+function initConfirm() {
+  document.getElementById('confirmYes').onclick = () => closeConfirm(true);
+  document.getElementById('confirmNo').onclick = () => closeConfirm(false);
+  // 点遮罩空白处 = 取消
+  document.getElementById('confirmMask').onclick = e => {
+    if (e.target.id === 'confirmMask') closeConfirm(false);
+  };
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !document.getElementById('confirmMask').hidden) closeConfirm(false);
+  });
 }
 
 /* ---------- 多设备上下文 ---------- */
@@ -1436,6 +1544,17 @@ function renderTabs() {
     x.className = 'tab-close';
     x.innerHTML = SVG.close;
     x.title = '断开该设备';
+    // 图标按钮没有文字：给读屏一个名字；span 默认不在键盘序列里，补上让 Tab 能走到
+    x.setAttribute('role', 'button');
+    x.setAttribute('tabindex', '0');
+    x.setAttribute('aria-label', '断开 ' + deviceLabel(d));
+    x.onkeydown = ev => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        disconnectDevice(d.serial);
+      }
+    };
     x.onclick = ev => { ev.stopPropagation(); disconnectDevice(d.serial); };
     t.appendChild(x);
     t.onclick = () => selectDevice(d.serial);
@@ -1484,6 +1603,11 @@ function selectDevice(serial) {
 }
 
 async function disconnectDevice(serial) {
+  // 断开是最容易误触又最不好收拾的一个（无线设备断了要重连甚至重新配对），
+  // 而它的 × 就紧挨着「切到这台设备」的点击区，所以必须先问一句。
+  const ok = await askConfirm('断开这台设备？',
+    '断开后这台设备要从「最近连接」里重连，无线设备可能还要重新配对。', '断开');
+  if (!ok) return;
   setHint('正在断开 ' + serial + ' …');
   try { await api('/api/disconnect', 'POST', {device: serial}); } catch (e) {}
   if (pendingAddr === serial) pendingAddr = null;
@@ -1609,12 +1733,16 @@ function fillConfigInputs() {
 
   const tray = document.getElementById('minimize_to_tray');
   if (tray) tray.checked = !!config.minimize_to_tray;
-  const aot = document.getElementById('always_on_top');
-  if (aot) aot.checked = !!config.always_on_top;
   const rc = document.getElementById('reconnect_enabled');
   if (rc) rc.checked = config.reconnect_enabled !== false;   // 默认开启
   const au = document.getElementById('autostart');
   if (au) au.checked = !!config.autostart;
+  const nc = document.getElementById('no_control');
+  if (nc) nc.checked = !!config.no_control;
+  const po = document.getElementById('power_off_on_close');
+  if (po) po.checked = !!config.power_off_on_close;
+  const mc = document.getElementById('mouse_capture');
+  if (mc) mc.checked = !!config.mouse_capture;
 
   const presets = config.res_presets || [];
   const sel = document.getElementById('resPreset');
@@ -2128,6 +2256,8 @@ function updateAddBtn(btn) {
     btn.innerHTML = SVG.plus;
     btn.title = '添加到快捷启动';
   }
+  // 角标只有图标：读屏需要一个名字（标题在不同状态下不一样，这里跟着走）
+  btn.setAttribute('aria-label', btn.title);
 }
 
 function findApp(pkg) {
@@ -2375,20 +2505,34 @@ async function saveTray(on) {
              : '已关闭：点关闭将直接退出应用', 9000);
 }
 
-// 投屏窗口置顶（默认关闭）：改完重新投屏一次生效
-async function saveAlwaysOnTop(on) {
-  config.always_on_top = !!on;
-  await api('/api/config', 'POST', { always_on_top: !!on });
-  setHint(on ? '已开启投屏窗口置顶（重新投屏后生效）'
-             : '已关闭投屏窗口置顶（重新投屏后生效）', 9000);
-}
-
 // 掉线自动重连开关（默认开启）
 async function saveReconnect(on) {
   config.reconnect_enabled = !!on;
   await api('/api/config', 'POST', { reconnect_enabled: !!on });
   setHint(on ? '已开启掉线自动重连（间隔逐次拉长，最多试 10 次）'
              : '已关闭掉线自动重连', 9000);
+}
+
+// 以下三项都是 scrcpy 的启动期参数：改完要重新投屏才生效，所以提示里都点明这一点
+async function saveNoControl(on) {
+  config.no_control = !!on;
+  await saveConfigPatch({ no_control: !!on },
+    on ? '已开启只看不控：画面上不再能操作手机（重新投屏后生效）'
+       : '已关闭只看不控：画面可以操作手机了（重新投屏后生效）');
+}
+
+async function savePowerOffOnClose(on) {
+  config.power_off_on_close = !!on;
+  await saveConfigPatch({ power_off_on_close: !!on },
+    on ? '已开启：关掉投屏窗口时顺手关掉手机屏幕，不会锁屏（重新投屏后生效）'
+       : '已关闭：关掉投屏窗口不再动手机屏幕（重新投屏后生效）');
+}
+
+async function saveMouseCapture(on) {
+  config.mouse_capture = !!on;
+  await saveConfigPatch({ mouse_capture: !!on },
+    on ? '已开启鼠标捕获：鼠标变成相对模式、光标锁在投屏窗口里（重新投屏后生效）'
+       : '已关闭鼠标捕获（重新投屏后生效）');
 }
 
 /* ---------- 锁屏解锁 / 熄屏 ---------- */
@@ -2626,14 +2770,49 @@ async function savePreset() {
 async function deletePreset() {
   const val = document.getElementById('resPreset').value;
   if (!val) return alert('请先选要删的预设');
+  const ok = await askConfirm('删除这个分辨率预设？',
+    '预设「' + val + '」会被移除。删掉只能重新加回来。', '删除');
+  if (!ok) return;
   const s = await api('/api/status');
   const presets = (s.config.res_presets || []).filter(p => p !== val);
-  await api('/api/config', 'POST', {res_presets: presets});
+  const saved = await saveConfigPatch({res_presets: presets},
+    '已删除预设 ' + val);
   presetKey = '';
-  checkStatus();
+  if (saved) checkStatus();
 }
 
+/* ---------- 键盘可达性 ---------- */
+// 侧边栏项和应用卡片是 div / span + onclick 做的，默认不在 Tab 序列里，键盘根本走不到。
+// 这里统一补 tabindex 与 role，回车 / 空格等同点击。没把它们改成 <button>：那会带进
+// 浏览器默认的按钮样式，得一条条覆盖回来，改动面太大、也容易把现有布局碰坏。
+// 元素是动态渲染的，所以用 MutationObserver 盯住新增节点，而不是去改每个渲染函数。
+const KB_SELECTOR = '.nav-item, .app-card';
+const KB_CLICKABLE = 'button, a, input, select, textarea, [contenteditable]';
+
+function stampKeyboard(root) {
+  (root || document).querySelectorAll(KB_SELECTOR).forEach(el => {
+    if (el.dataset.kb === '1') return;          // 只标一次，别重复挂属性
+    el.dataset.kb = '1';
+    if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
+  });
+}
+
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter' && ev.key !== ' ') return;
+  const el = ev.target;
+  if (!el || !el.matches || !el.matches(KB_SELECTOR)) return;
+  if (el.querySelector(KB_CLICKABLE)) return;   // 里面已经有真按钮：让它自己处理，别重复触发
+  ev.preventDefault();                          // 空格默认会滚页面
+  el.click();
+});
+
+new MutationObserver(() => stampKeyboard(document))
+  .observe(document.body, { childList: true, subtree: true });
+stampKeyboard();
+
 initDrawer();
+initConfirm();
 renderQuick();
 // 侧边栏折叠状态是纯界面偏好，放本地；主题在后端配置里（见 checkStatus）
 try {
@@ -2641,9 +2820,28 @@ try {
     document.getElementById('sidebar').classList.add('collapsed');
   }
 } catch (e) {}
-// 状态每 3 秒轮询一次：连接状态始终以 adb 实际在线的设备为准，不再依赖界面文案
-setInterval(checkStatus, 3000);
-checkStatus().then(autoDiscover);   // 未连接时启动后台扫描一次
+
+// 状态每 3 秒轮询一次：连接状态始终以 adb 实际在线的设备为准，不再依赖界面文案。
+// 但窗口收进托盘（本应用的主场景）时要把轮询停掉——/api/status 每次都会跑一次
+// adb devices，后台待命时每 3 秒来一次纯属白烧。
+let statusTimer = null;
+
+function syncPolling() {
+  if (document.hidden) {
+    if (statusTimer) { clearInterval(statusTimer); statusTimer = null; }
+  } else if (!statusTimer) {
+    checkStatus();
+    statusTimer = setInterval(checkStatus, 3000);
+  }
+}
+
+document.addEventListener('visibilitychange', syncPolling);
+
+// 首次进来先拉一次状态，再决定要不要后台扫一遍；之后的轮询交给 syncPolling 按可见性开关
+checkStatus().then(() => {
+  syncPolling();
+  autoDiscover();
+});
 </script>
 </body>
 </html>

@@ -858,9 +858,10 @@ def test_launch_desktop_leaves_volume_alone_in_phone_mode(monkeypatch):
     assert adb.volume_set_calls == []
 
 
-# ---------- 投屏窗口：位置记忆 / 置顶 / 标题 ----------
-# 窗口位置存的是逻辑坐标（Windows 报给我们的那套），给 scrcpy 时要换算成物理像素；
-# 换过显示器后旧坐标可能已经在屏幕外，那时宁可让 scrcpy 自己挑位置。
+# ---------- 投屏窗口：位置 / 置顶 / 标题 ----------
+# 窗口位置交给 scrcpy 自己挑（--window-x/y 默认就是 auto）。以前记下用户拖到的坐标下次
+# 照搬，还要判断换显示器后旧坐标在不在屏幕内、按缩放把逻辑坐标换算成物理像素——换来的是
+# 「窗口开在上次的位置」这点小便利，不值得那套复杂度，所以整块去掉了。
 
 def _cmd(monkeypatch, cfg=None, **kwargs):
     """按给定配置拼一条投屏命令（不碰真的 scrcpy / adb）。"""
@@ -869,26 +870,16 @@ def _cmd(monkeypatch, cfg=None, **kwargs):
     return device.build_scrcpy_cmd(**kwargs)
 
 
-def test_window_args_use_saved_position(monkeypatch):
-    monkeypatch.setattr(device, "_screen_scale", lambda: 2.0)
-    monkeypatch.setattr(device, "_pos_reachable", lambda x, y: True)
-    # 配置里存的是逻辑坐标，scrcpy 要物理像素：200% 缩放下要乘 2
-    assert device._window_args({"window_x": "427", "window_y": "289"}) == \
-        ["--window-x=854", "--window-y=578"]
+def test_window_position_is_left_to_scrcpy(monkeypatch):
+    """拼出来的命令里不能有窗口坐标，位置一律由 scrcpy 自己挑。
 
-
-def test_window_args_skip_when_nothing_saved(monkeypatch):
-    monkeypatch.setattr(device, "_screen_scale", lambda: 1.0)
-    assert device._window_args({}) == []
-    assert device._window_args({"window_x": "", "window_y": ""}) == []
-    assert device._window_args({"window_x": "abc", "window_y": "1"}) == []
-
-
-def test_window_args_skip_when_off_screen(monkeypatch):
-    """换过显示器 / 改过分辨率后旧坐标已经在屏幕外：不能再沿用，否则窗口开在看不见的地方。"""
-    monkeypatch.setattr(device, "_screen_scale", lambda: 1.0)
-    monkeypatch.setattr(device, "_pos_reachable", lambda x, y: False)
-    assert device._window_args({"window_x": "5000", "window_y": "3000"}) == []
+    回归用：以前存过 window_x / window_y，老配置里可能还残留这两个键，
+    不能因为它们又冒出来就把窗口钉回旧位置。
+    """
+    cases = ({"window_x": "427", "window_y": "289"}, {}, {"window_x": "", "window_y": "abc"})
+    for cfg in cases:
+        cmd = _cmd(monkeypatch, cfg, pkg="com.tencent.mm", title="微信")
+        assert [a for a in cmd if a.startswith(("--window-x", "--window-y"))] == []
 
 
 def test_build_cmd_puts_title_on_app_mirroring(monkeypatch):

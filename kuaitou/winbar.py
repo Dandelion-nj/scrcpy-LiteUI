@@ -1,32 +1,32 @@
-"""投屏窗口原生标题栏的增强。
+"""投屏窗口的增强：主窗口与投屏窗口的标题栏配色 + 投屏窗口右侧的功能栏。
 
+分两块：
 
-scrcpy 自己会开一个带原生标题栏的窗口，但那条栏上只有最小化/最大化/关闭，默认还是浅色
-的，跟主界面的深色主题对不上。这里在原生标题栏上补三件事：
+**主窗口标题栏染色**（`style_main_window`）：用 DWM 把主界面的标题栏染成跟主题同色，
+并去掉图标与标题文字（看起来接近无边框）。这里是「重活只做一次」的调度：
+「去图标 + 加无图标标记」要重算窗口边框、会把整块窗口连网页一起重画，所以只在窗口
+第一次出现时做，之后换主题只改 DWM 的几个颜色。
 
-1. 用 DWM 把标题栏染成主界面的深色（深色标题栏 + 底色/文字色/边框色 + 圆角）；
-2. 把窗口图标（含任务栏）换成目标应用自己的图标，ICO 在等窗口的那几秒里先转好，
-   窗口一出现就是最终图标，不会再「先出来一个默认图标、过一会儿才换掉」；
-3. 在系统按钮左边叠一个自己的按钮：📌 置顶。
-
-   适应窗口 / 全屏这两个动作本来也能做，但 scrcpy 自己就有快捷键（按住 MOD 再按 W / F），
-   多摆两个按钮反而把标题栏占满，所以去掉了。
-
-为什么不自己画整条标题栏：scrcpy 用 --window-borderless 起来时是 WS_POPUP 窗口，整个
-窗口都算客户区，系统不给缩放边框——实测拖右下角窗口纹丝不动（831×1847 不变）。恢复原生
-边框后，拖边缩放、双击最大化、贴边、系统菜单全都回来了，代价是不能再自己画整条栏，
-只能在系统的标题栏上做文章。
+**投屏窗口右侧功能栏**（`attach`）：在 scrcpy 窗口上叠一条竖排按钮——
+置顶、音量加减、强制横屏，外加（仅镜像桌面）返回 / 桌面 / 多任务 / 通知栏 / 控制中心。
+鼠标扫到窗口右边缘才展开，平时只留贴边一条细条，基本不挡画面。
 
 叠加窗口用色键透明（WS_EX_LAYERED + LWA_COLORKEY）：底色画成键色，那块地方既不显示也
-点不到，鼠标会穿过去落到下面的标题栏上——标题栏照样按住拖动，我们只吃自己图标上的点击。
-顺带绕开了「窗口激活/非激活时标题栏底色不一样」的麻烦：我们根本不画底色。
+点不到，鼠标会穿过去落到下面的画面上——画面右键（scrcpy 的返回）之类的操作照样能用，
+我们只吃自己按钮上的点击。代价是**细条那一片收不到鼠标消息**，所以「鼠标扫过来就展开」
+只能靠定时器轮询 GetCursorPos 自己判，不能等 WM_MOUSEMOVE。
 
-线程与 DPI：整条逻辑跑在自己的线程上，进线程先声明 PER_MONITOR_AWARE_V2——主进程不是
+功能栏的按钮分两类：置顶是纯窗口操作，留在本模块；其余都要发 adb 命令，而 device 已经
+import 了本模块（反过来会成环），所以由入口 launcher_server.py 用 `set_action_handler`
+把 device.winbar_action 注入进来。
+
+线程与 DPI：整块逻辑跑在自己的线程上，进线程先声明 PER_MONITOR_AWARE_V2——主进程不是
 DPI 感知的，沿用主线程的坐标会被系统按缩放拉伸。该线程内一律物理像素。
 """
 
 
 import ctypes
+import math
 import os
 import shutil
 import tempfile
@@ -37,7 +37,7 @@ from ctypes import wintypes
 from .storage import LAUNCH_LOG_STREAM, RES_DIR, save_config, storage_write
 
 # ---------- 尺寸 / 配色（逻辑像素，实际按 DPI 缩放）----------
-_GLYPH = 15                 # 图标本体的边长
+_GLYPH = 18                 # 图标本体的边长
 
 
 def _rgb(r, g, b):
@@ -56,8 +56,6 @@ _KEY = 0x00FF00FF
 
 # ---------- Win32 常量 ----------
 _WS_POPUP = 0x80000000
-_WS_CAPTION = 0x00C00000
-_GWL_STYLE = -16
 _WS_EX_TOOLWINDOW, _WS_EX_NOACTIVATE = 0x00000080, 0x08000000
 _WS_EX_LAYERED = 0x00080000
 _WS_EX_DLGMODALFRAME = 0x00000001
@@ -119,21 +117,6 @@ class _PAINTSTRUCT(ctypes.Structure):
                 ("rgbReserved", ctypes.c_byte * 32)]
 
 
-_CCHILDREN_TITLEBAR = 5
-
-
-class _TITLEBARINFOEX(ctypes.Structure):
-    """WM_GETTITLEBARINFOEX 的返回结构：标题栏矩形 + 每个系统按钮的矩形。
-
-    实测（Win11 原生边框窗口）有效的是索引 2=最小化、3=最大化、5=关闭，其余为空。
-    代码里不按索引取，只取「所有非空矩形的并集」，免得不同系统版本索引含义变了就抓瞎。
-    """
-    _fields_ = [("cbSize", wintypes.DWORD),
-                ("rcTitleBar", wintypes.RECT),
-                ("rgstate", wintypes.DWORD * (_CCHILDREN_TITLEBAR + 1)),
-                ("rgrect", wintypes.RECT * (_CCHILDREN_TITLEBAR + 1))]
-
-
 # 函数原型必须显式声明：句柄在 64 位上是指针，不声明 argtypes 的话 ctypes 会按 32 位
 # C int 传参，句柄被截断，GDI 调用会悄无声息地全部失败（或画到别的地方去）。
 def _decl(fn, restype, argtypes):
@@ -160,6 +143,8 @@ def _ensure_api():
         C = ctypes.c_int
         for name, res, args in (
                 ("GetWindowRect", wintypes.BOOL, (_H, _H)),
+                ("GetClientRect", wintypes.BOOL, (_H, _H)),
+                ("ClientToScreen", wintypes.BOOL, (_H, _H)),
                 ("GetWindowLongW", ctypes.c_long, (_H, ctypes.c_int)),
                 ("SetWindowLongW", ctypes.c_long, (_H, ctypes.c_int, ctypes.c_long)),
                 ("FindWindowW", _H, (wintypes.LPCWSTR, wintypes.LPCWSTR)),
@@ -220,6 +205,15 @@ def _ensure_api():
         _decl(g.RoundRect, wintypes.BOOL,
               (_H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                ctypes.c_int, ctypes.c_int))
+        # 下面这几个是「好看的线条」必需的：ExtCreatePen 才能做出圆端点 + 圆拐角的几何笔
+        _decl(g.ExtCreatePen, _H, (wintypes.DWORD, wintypes.DWORD, _H, wintypes.DWORD, _H))
+        _decl(g.GetStockObject, _H, (ctypes.c_int,))
+        _decl(g.Ellipse, wintypes.BOOL,
+              (_H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int))
+        _decl(g.Arc, wintypes.BOOL,
+              (_H, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+               ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int))
+        _decl(g.Polyline, wintypes.BOOL, (_H, _H, ctypes.c_int))
         _decl(k.GetModuleHandleW, _H, (W,))
         _decl(k.GetLastError, wintypes.DWORD, ())
         _decl(k.OpenProcess, _H, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD))
@@ -246,16 +240,46 @@ def _log(msg):
         pass
 
 
+# ---------- 功能栏：按钮清单与尺寸 ----------
+# 顺序就是右侧竖列自上而下的顺序。
+# 后五个只在「镜像桌面」出现：镜像应用开的是虚拟屏，返回 / 桌面 / 多任务 / 通知栏 /
+# 控制中心这些打到手机真实界面上没有意义——要操作虚拟屏里的应用，那是 scrcpy 的活。
+_BAR_COMMON = ("pin", "volume_up", "volume_down", "rotate_lock")
+_BAR_DESKTOP = ("back", "home", "app_switch", "notifications", "control_center")
+
+def _bar_actions(desktop):
+    return _BAR_COMMON + (_BAR_DESKTOP if desktop else ())
+
+# 条带尺寸（逻辑像素，实际按 DPI 缩放）
+_STRIP_W = 34           # 展开后的宽度
+_STRIP_EDGE = 6         # 收起时贴边留的那条细条：看得出有东西，又基本不挡画面
+_STRIP_PAD = 4          # 条内上下留白
+_BTN_MIN, _BTN_MAX = 22, 30
+_COLLAPSE_DELAY = 0.6   # 鼠标离开后多久自动收起
+
+# winbar 不认识 adb（device 已经 import 了本模块，反过来会成环），所以
+# 「把动作发给手机」这一步由入口 launcher_server.py 注入进来。
+_action_handler = None
+
+def set_action_handler(fn):
+    """注入动作执行器，签名 (serial, action) -> None。"""
+    global _action_handler
+    _action_handler = fn
+
+
 # ---------- 对外接口 ----------
 
 _bars = {}                  # {scrcpy 进程 pid: _Bar}
 _bars_lock = threading.Lock()
 
 
-def attach(proc, icon_path=None, always_on_top=False):
-    """给 scrcpy 进程的原生标题栏做增强：窗口一出现就挂上（后台线程，不阻塞调用方）。
+def attach(proc, icon_path=None, always_on_top=False, serial=None, desktop=False):
+    """给 scrcpy 窗口挂上右侧功能栏：窗口一出现就挂（后台线程，不阻塞调用方）。
 
     同一个进程只挂一次；scrcpy 退出后叠加窗口会自己收尾并清掉登记表。
+
+    serial / desktop 是给按钮用的：前者决定 adb 命令发给哪台设备，后者决定要不要摆
+    「返回 / 桌面 / 多任务 / 通知栏 / 控制中心」那一组。
     """
     pid = getattr(proc, "pid", 0)
     if not pid:
@@ -263,7 +287,7 @@ def attach(proc, icon_path=None, always_on_top=False):
     with _bars_lock:
         if pid in _bars:
             return
-        _bars[pid] = _Bar(proc, icon_path, bool(always_on_top))
+        _bars[pid] = _Bar(proc, icon_path, bool(always_on_top), serial, bool(desktop))
     threading.Thread(target=_run, args=(pid,), name="winbar-%d" % pid, daemon=True).start()
 
 
@@ -279,11 +303,17 @@ def shutdown():
 class _Bar:
     """一个叠加条的全部状态。只在它自己的线程里改。"""
 
-    def __init__(self, proc, icon_path, pinned):
+    def __init__(self, proc, icon_path, pinned, serial=None, desktop=False):
         self.proc = proc
         self.pid = getattr(proc, "pid", 0)
         self.icon_path = icon_path
         self.pinned = pinned
+        self.serial = serial        # 按钮的 adb 命令发给哪台设备
+        self.desktop = desktop      # 镜像桌面才摆「返回」那一组
+        self.open = False           # 功能栏是否已展开（鼠标悬停才展开）
+        self.close_at = 0.0         # 鼠标离开后到点收起的时间戳
+        self.rotate_on = False      # 强制横屏按钮的高亮状态（真实状态在手机上）
+        self.actions = []           # 与 btns 一一对应的动作名
         self.target = None          # scrcpy 画面窗口
         self.hwnd = None            # 叠加条自己
         self.scale = 1.0
@@ -291,10 +321,10 @@ class _Bar:
         self.icon_big = None
         self.hot = -1               # 鼠标悬停的按钮
         self.pressed = -1           # 按下还没松开的按钮
-        self.btns = []              # [(左, 上, 右, 下), ...] 客户区坐标
-        self.band = None            # 最近一次算出来的标题栏按钮带
+        self.btns = []              # [(左, 上, 右, 下), ...] 屏幕坐标
+        self.band = None            # 最近一次算出来的功能栏条带（屏幕坐标）
         self.geom = None            # 最近一次的画面窗口矩形（变了才重算布局）
-        self.retry_at = 0.0         # 布局失败（全屏等）后什么时候再问一次
+        self.retry_at = 0.0         # 布局失败后什么时候再试一次
         self.cancelled = False
 
 
@@ -654,38 +684,59 @@ def _create(bar):
 
 # ---------- 布局：算出手上的按钮压在标题栏的哪个位置 ----------
 
-def _sys_buttons(hwnd):
-    """问系统要标题栏上系统按钮的矩形；一个都没有就说明这窗口没有标题栏（比如全屏）。"""
-    info = _TITLEBARINFOEX()
-    info.cbSize = ctypes.sizeof(_TITLEBARINFOEX)
-    # lParam 声明成了 LPARAM（整数），这里必须传地址的数值：传 c_void_p 会被 ctypes 拒收
-    got = _user32.SendMessageW(hwnd, 0x033F, 0, ctypes.addressof(info))
-    if not got:
+def _client_screen_rect(hwnd):
+    """目标窗口客户区在屏幕上的矩形，也就是画面区域。拿不到返回 None。
+
+    用客户区而不是整窗矩形：功能栏要贴着画面右边缘，标题栏和边框都不算数。
+    顺带也不再看窗口样式，所以全屏（没有标题栏）时照样能算出来——旧版全屏是直接放弃的。
+    """
+    if not hwnd or not _user32.IsWindow(hwnd):
         return None
-    return [r for r in info.rgrect if r.right > r.left and r.bottom > r.top]
+    rc = wintypes.RECT()
+    if not _user32.GetClientRect(hwnd, ctypes.byref(rc)):
+        return None
+    pt = wintypes.POINT(0, 0)
+    if not _user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+        return None
+    w, h = rc.right - rc.left, rc.bottom - rc.top
+    if w <= 0 or h <= 0:
+        return None
+    return (pt.x, pt.y, pt.x + w, pt.y + h)
 
 
 def _layout(bar):
-    """算标题栏那条按钮带（屏幕坐标）与置顶按钮的位置。全屏 / 问不到时返回 False。
+    """算出右侧功能栏的条带与每个按钮（都是屏幕坐标）。量不出来时返回 False。
 
-    按钮宽度直接照抄系统按钮：几个系统按钮等宽，量出它们的总宽除以个数，我们画的按钮
-    就和原生的一模一样大、一样高，看起来才像一家的。
+    收起态只留贴边一条细条、btns 为空——那样既看得出有东西，又点不到；
+    展开态按钮竖向均分，边长先按最小尺寸排，放得下再放大到上限。
     """
-    # 全屏时窗口没有标题栏。这里必须先按窗口样式排掉：全屏下问 WM_GETTITLEBARINFOEX
-    # 照样会「成功」返回，但里面是几块离谱的矩形（实测算出 2064×2065 的按钮带），
-    # 照它摆按钮会得到一条横贯屏幕的怪东西。
-    if not _user32.GetWindowLongW(bar.target, _GWL_STYLE) & _WS_CAPTION:
+    rect = _client_screen_rect(bar.target)
+    if not rect:
         return False
-    boxes = _sys_buttons(bar.target)
-    if not boxes:
+    left, top, right, bottom = rect
+    actions = _bar_actions(bar.desktop)
+    pad = int(round(_STRIP_PAD * bar.scale))
+    # 放不下所有按钮就整条不摆：宁可不给，也别让按钮溢出到条带外面去
+    if not actions or bottom - top - pad * 2 < _BTN_MIN * bar.scale * len(actions):
         return False
-    top = min(b.top for b in boxes)
-    bottom = max(b.bottom for b in boxes)
-    left = min(b.left for b in boxes)
-    right = max(b.right for b in boxes)
-    btn_w = max(int(round(28 * bar.scale)), (right - left) // len(boxes))
-    bar.btns = [(left - btn_w, top, left, bottom)]
-    bar.band = (bar.btns[0][0], top, left, bottom)
+    if right - left < int(round(_STRIP_W * 3 * bar.scale)):
+        return False
+    strip = _STRIP_W if bar.open else _STRIP_EDGE
+    sx1 = right - int(round(strip * bar.scale))
+    bar.band = (sx1, top + pad, right, bottom - pad)
+    if not bar.open:
+        bar.btns, bar.actions = [], []
+        return True
+    avail = bar.band[3] - bar.band[1]
+    size = max(int(round(_BTN_MIN * bar.scale)),
+               min(int(round(_BTN_MAX * bar.scale)), avail // len(actions)))
+    x1 = sx1 + max(0, (right - sx1 - size) // 2)
+    y = bar.band[1] + max(0, (avail - size * len(actions)) // 2)
+    btns = []
+    for _ in actions:
+        btns.append((x1, y, x1 + size, y + size))
+        y += size
+    bar.btns, bar.actions = btns, list(actions)
     return True
 
 
@@ -714,26 +765,55 @@ def _on_timer(bar):
         return
     geom = (r.left, r.top, r.right, r.bottom)
     retry = bar.band is None and time.time() >= bar.retry_at
-    if geom != bar.geom or retry:
+    was_open = bar.open
+    _update_open(bar)
+    if geom != bar.geom or retry or bar.open != was_open:
         bar.geom = geom
         if not _layout(bar):
-            bar.retry_at = time.time() + 0.5     # 全屏 / 异常：半秒后再问一次，别空转
+            bar.retry_at = time.time() + 0.5     # 窗口太小 / 刚起来：半秒后再试，别空转
             _hide(bar)
             return
         bl, bt, br, bb = bar.band
         _user32.SetWindowPos(bar.hwnd, _HWND_TOPMOST if bar.pinned else None,
                              bl, bt, br - bl, bb - bt,
                              _SWP_NOACTIVATE | (0 if bar.pinned else _SWP_NOZORDER))
+        if not _user32.IsWindowVisible(bar.hwnd):
+            _user32.ShowWindow(bar.hwnd, _SW_SHOWNOACTIVATE)
     if bar.band is None:
         return
-    if not _user32.IsWindowVisible(bar.hwnd):
-        _user32.ShowWindow(bar.hwnd, _SW_SHOWNOACTIVATE)
     _hover(bar)
+
+
+def _update_open(bar):
+    """按光标位置决定功能栏展开还是收起。
+
+    必须用 GetCursorPos 自己判，不能等 WM_MOUSEMOVE：叠加窗口是色键透明的，细条那一片
+    收不到任何鼠标消息（「鼠标穿透」就是这么实现的），靠窗口内移动来触发展开永远不会发生。
+    这也是现有 _hover 一直在用的办法。
+    """
+    if bar.band is None:
+        return
+    pt = wintypes.POINT()
+    if not _user32.GetCursorPos(ctypes.byref(pt)):
+        return
+    _, y1, x2, y2 = bar.band
+    # 判定区按「展开后」的宽度算：收起时只有 6px，不然鼠标很难正好扫到
+    inside = (x2 - int(round(_STRIP_W * bar.scale)) <= pt.x < x2 and y1 <= pt.y < y2)
+    now = time.time()
+    if inside:
+        bar.close_at = 0.0
+        bar.open = True
+    elif bar.open:
+        if not bar.close_at:
+            bar.close_at = now + _COLLAPSE_DELAY
+        elif now >= bar.close_at:
+            bar.open, bar.close_at = False, 0.0
 
 
 def _hide(bar):
     bar.band = None
     bar.btns = []
+    bar.actions = []
     bar.hot = -1
     if _user32.IsWindowVisible(bar.hwnd):
         _user32.ShowWindow(bar.hwnd, _SW_HIDE)
@@ -829,10 +909,41 @@ def _on_down(bar):
 def _on_up(bar):
     idx = bar.pressed
     bar.pressed = -1
-    if idx >= 0:
-        _user32.ReleaseCapture()
-        if idx == bar.hot:                  # 松手时还在按钮上才算数
-            _act_pin(bar)
+    if idx < 0:
+        return
+    _user32.ReleaseCapture()
+    if idx != bar.hot:                      # 松手时还在按钮上才算数
+        return
+    if idx < len(bar.actions):
+        _run_action(bar, bar.actions[idx])
+
+
+def _run_action(bar, action):
+    """点了一个按钮：置顶是纯窗口操作，留在本地；其余交给注入的执行器去发 adb。
+
+    执行器放后台线程里跑：adb 一次往返几百毫秒，在消息循环里同步等会把整个功能栏
+    （连跟随画面的定时器）一起卡住。
+    """
+    if action == "pin":
+        _act_pin(bar)
+        return
+    if action == "rotate_lock":
+        # 乐观翻一下高亮。真实状态在手机上，这里只负责按钮看起来对不对
+        bar.rotate_on = not bar.rotate_on
+        _user32.InvalidateRect(bar.hwnd, None, False)
+    handler = _action_handler
+    if handler is None:
+        _log("功能栏动作 %s 没有执行器：launcher_server 忘了注入？" % action)
+        return
+    threading.Thread(target=_invoke_action, args=(handler, bar.serial, action),
+                     name="winbar-act", daemon=True).start()
+
+
+def _invoke_action(handler, serial, action):
+    try:
+        handler(serial, action)
+    except Exception as e:
+        _log("功能栏动作 %s 执行失败：%r" % (action, e))
 
 
 def _act_pin(bar):
@@ -858,7 +969,7 @@ def _paint(bar, hwnd):
     if not hdc:
         return
     try:
-        if bar is not None and bar.btns:
+        if bar is not None and bar.band:
             _paint_bar(bar, hdc)
     finally:
         _user32.EndPaint(hwnd, ctypes.byref(ps))
@@ -896,15 +1007,197 @@ def _paint_bar(bar, hdc):
     w, h = r.right - r.left, r.bottom - r.top
     _veil(hdc, w, h)
     ox, oy = bar.band[0], bar.band[1]
-    for x1, y1, x2, y2 in bar.btns:
+    if not bar.open:
+        # 收起态：贴右边缘一条细高亮，提示「这儿有东西」。鼠标扫过来就展开
+        _fill(hdc, ox, oy, ox + w - 1, oy + h - 1, _DIM)
+        return
+    for i, (x1, y1, x2, y2) in enumerate(bar.btns):
         x, y = x1 - ox, y1 - oy
         bw, bh = x2 - x1, y2 - y1
-        hovered = (bar.hot == 0)
+        hovered = (bar.hot == i)
+        action = bar.actions[i] if i < len(bar.actions) else ""
         if hovered:
-            _fill(hdc, x + 1, y + 3, x + bw - 1, y + bh - 3, _HOVER)
-        # 置顶生效时整个图标换成强调色，一眼看得出当前是「已置顶」
-        color = _ACCENT if bar.pinned else (_TEXT if hovered else _DIM)
-        _draw_pin(hdc, x + bw // 2, y + bh // 2, bar.scale, color)
+            _fill(hdc, x + 1, y + 1, x + bw - 1, y + bh - 1, _HOVER)
+        # 置顶 / 强制横屏开着时图标换成强调色：一眼看得出当前是「已开」
+        on = (action == "pin" and bar.pinned) or (action == "rotate_lock" and bar.rotate_on)
+        _draw_glyph(hdc, x + bw // 2, y + bh // 2, bar.scale,
+                    _ACCENT if on else (_TEXT if hovered else _DIM), action)
+
+
+# ---------- 图标：统一的「细线 + 圆头圆角」笔触 ----------
+# 参考的那套图标（vivo 那种观感）线条细、端点圆、拐角圆。GDI 默认的 cosmetic 笔是方头，
+# 描出来又硬又脏，所以统一改用几何笔 + 圆端点 + 圆连接，并且所有图标的笔宽都取自同一个
+# 常量，摆在一列里粗细才一致。
+_PS_GEOMETRIC = 0x00010000
+_BS_SOLID = 0
+_NULL_BRUSH = 5
+_STROKE_W = 1.7
+
+
+class _LOGBRUSH(ctypes.Structure):
+    _fields_ = [("lbStyle", wintypes.UINT),
+                ("lbColor", wintypes.DWORD),
+                ("lbHatch", ctypes.c_size_t)]
+
+
+class _Stroke:
+    """一次绘制用的笔与刷。
+
+    NULL_BRUSH 是关键：RoundRect / Ellipse / Polygon 都会拿当前画刷去填充，想只描轮廓
+    就得先把画刷换成空的，需要实心圆点时再切回来。
+    """
+
+    def __init__(self, hdc, width, color):
+        self.hdc = hdc
+        brush_def = _LOGBRUSH(_BS_SOLID, color, 0)
+        self.pen = _gdi32.ExtCreatePen(_PS_GEOMETRIC, max(1, int(round(width))),
+                                       ctypes.byref(brush_def), 0, None)
+        if not self.pen:                       # 老系统兜底：至少别画不出来
+            self.pen = _gdi32.CreatePen(0, max(1, int(round(width))), color)
+        self.old_pen = _gdi32.SelectObject(hdc, self.pen)
+        self.brush = _gdi32.CreateSolidBrush(color)
+        self.old_brush = _gdi32.SelectObject(hdc, _gdi32.GetStockObject(_NULL_BRUSH))
+
+    def solid(self):
+        _gdi32.SelectObject(self.hdc, self.brush)
+
+    def hollow(self):
+        _gdi32.SelectObject(self.hdc, _gdi32.GetStockObject(_NULL_BRUSH))
+
+    def close(self):
+        _gdi32.SelectObject(self.hdc, self.old_pen)
+        _gdi32.SelectObject(self.hdc, self.old_brush)
+        _gdi32.DeleteObject(self.pen)
+        _gdi32.DeleteObject(self.brush)
+
+
+def _seg(hdc, x1, y1, x2, y2):
+    _gdi32.MoveToEx(hdc, int(round(x1)), int(round(y1)), None)
+    _gdi32.LineTo(hdc, int(round(x2)), int(round(y2)))
+
+
+def _path(hdc, pts):
+    """折线。用几何笔画出来拐角是圆的，箭头那种折角才不会显得尖。"""
+    arr = (_POINT * len(pts))(*[wintypes.POINT(int(round(x)), int(round(y))) for x, y in pts])
+    _gdi32.Polyline(hdc, arr, len(pts))
+
+
+def _oval(hdc, cx, cy, r):
+    _gdi32.Ellipse(hdc, int(round(cx - r)), int(round(cy - r)),
+                   int(round(cx + r)), int(round(cy + r)))
+
+
+def _rrect(hdc, x1, y1, x2, y2, r):
+    _gdi32.RoundRect(hdc, int(round(x1)), int(round(y1)), int(round(x2)), int(round(y2)),
+                     int(round(r)), int(round(r)))
+
+
+def _arc(hdc, cx, cy, rx, ry, a0, a1):
+    """圆弧（角度制，0° = 正右，逆时针为正）。GDI 的 Arc 也是逆时针画的。"""
+    x0, y0 = cx + rx * math.cos(a0), cy - ry * math.sin(a0)
+    x1, y1 = cx + rx * math.cos(a1), cy - ry * math.sin(a1)
+    _gdi32.Arc(hdc, int(round(cx - rx)), int(round(cy - ry)),
+               int(round(cx + rx)), int(round(cy + ry)),
+               int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1)))
+
+
+def _g_pin(hdc, cx, cy, u, st):
+    """置顶：顶上一条横线当天花板，下面一个朝上的折角箭头。"""
+    st.hollow()
+    _seg(hdc, cx - u * .78, cy - u * .82, cx + u * .78, cy - u * .82)
+    _path(hdc, [(cx - u * .52, cy - u * .06), (cx, cy - u * .58), (cx + u * .52, cy - u * .06)])
+    _seg(hdc, cx, cy - u * .5, cx, cy + u * .72)
+
+
+def _g_volume(hdc, cx, cy, u, st, up):
+    """音量：喇叭 + 声波。加号那边多一道弧，两者一眼能分开。"""
+    st.hollow()
+    _path(hdc, [(cx - u * .85, cy - u * .3), (cx - u * .38, cy - u * .3),
+                (cx + u * .04, cy - u * .78), (cx + u * .04, cy + u * .78),
+                (cx - u * .38, cy + u * .3), (cx - u * .85, cy + u * .3),
+                (cx - u * .85, cy - u * .3)])
+    tip = cx + u * .16
+    _arc(hdc, tip, cy, u * .42, u * .42, math.radians(-48), math.radians(48))
+    if up:
+        _arc(hdc, tip, cy, u * .8, u * .8, math.radians(-48), math.radians(48))
+
+
+def _g_rotate(hdc, cx, cy, u, st):
+    """强制横屏：横过来的手机（圆角屏 + 底部一条短横线当手势条）。"""
+    st.hollow()
+    w, h = u * .95, u * .58
+    _rrect(hdc, cx - w, cy - h, cx + w, cy + h, u * .3)
+    _seg(hdc, cx - u * .2, cy + h * .52, cx + u * .2, cy + h * .52)
+
+
+def _g_back(hdc, cx, cy, u, st):
+    """返回：一个左折角（现代安卓的返回手势图标）。"""
+    st.hollow()
+    _path(hdc, [(cx + u * .12, cy - u * .72), (cx - u * .6, cy), (cx + u * .12, cy + u * .72)])
+
+
+def _g_home(hdc, cx, cy, u, st):
+    """桌面：一个圆（安卓导航栏上的主页就是它）。"""
+    st.hollow()
+    _oval(hdc, cx, cy, u * .7)
+
+
+def _g_app_switch(hdc, cx, cy, u, st):
+    """多任务：一个圆角方框（安卓导航栏上的最近任务）。"""
+    st.hollow()
+    r = u * .66
+    _rrect(hdc, cx - r, cy - r, cx + r, cy + r, u * .26)
+
+
+def _g_notifications(hdc, cx, cy, u, st):
+    """通知栏：铃铛（圆顶 + 两侧直壁 + 底沿 + 一个铃舌）。"""
+    st.hollow()
+    r = u * .56
+    _arc(hdc, cx, cy - u * .1, r, r, math.radians(0), math.radians(180))
+    _seg(hdc, cx - r, cy - u * .1, cx - r, cy + u * .4)
+    _seg(hdc, cx + r, cy - u * .1, cx + r, cy + u * .4)
+    _seg(hdc, cx - u * .78, cy + u * .4, cx + u * .78, cy + u * .4)
+    st.solid()
+    _oval(hdc, cx, cy + u * .76, max(1.0, u * .17))
+
+
+def _g_control_center(hdc, cx, cy, u, st):
+    """控制中心：两条滑杆各带一个滑块（快捷设置面板）。"""
+    st.hollow()
+    _seg(hdc, cx - u * .85, cy - u * .42, cx + u * .85, cy - u * .42)
+    _seg(hdc, cx - u * .85, cy + u * .42, cx + u * .85, cy + u * .42)
+    st.solid()
+    _oval(hdc, cx - u * .28, cy - u * .42, max(1.5, u * .26))
+    _oval(hdc, cx + u * .36, cy + u * .42, max(1.5, u * .26))
+
+
+_GLYPHS = {
+    "pin": _g_pin,
+    "volume_up": lambda hdc, cx, cy, u, st: _g_volume(hdc, cx, cy, u, st, True),
+    "volume_down": lambda hdc, cx, cy, u, st: _g_volume(hdc, cx, cy, u, st, False),
+    "rotate_lock": _g_rotate,
+    "back": _g_back,
+    "home": _g_home,
+    "app_switch": _g_app_switch,
+    "notifications": _g_notifications,
+    "control_center": _g_control_center,
+}
+
+
+def _draw_glyph(hdc, cx, cy, scale, color, action):
+    """按动作画图标。
+
+    所有图标共用同一支「细线 + 圆头圆角」的笔（见 _Stroke），粗细也取自同一个常量，
+    竖排在一列里才显得是一套。绘制全部用 GDI 图元现画，不引外部图片资源。
+    """
+    drawer = _GLYPHS.get(action)
+    if not drawer:
+        return
+    st = _Stroke(hdc, _STROKE_W * scale, color)
+    try:
+        drawer(hdc, cx, cy, max(5.0, _GLYPH * scale / 2.0), st)
+    finally:
+        st.close()
 
 
 def _line(hdc, x1, y1, x2, y2, color, width=1):
@@ -914,27 +1207,3 @@ def _line(hdc, x1, y1, x2, y2, color, width=1):
     _gdi32.LineTo(hdc, int(x2), int(y2))
     _gdi32.SelectObject(hdc, old)
     _gdi32.DeleteObject(pen)
-
-
-def _poly(hdc, pts, color):
-    br = _gdi32.CreateSolidBrush(color)
-    pen = _gdi32.CreatePen(0, 1, color)
-    oldb = _gdi32.SelectObject(hdc, br)
-    oldp = _gdi32.SelectObject(hdc, pen)
-    arr = (_POINT * len(pts))(*[wintypes.POINT(int(x), int(y)) for x, y in pts])
-    _gdi32.SetPolyFillMode(hdc, _WINDING)
-    _gdi32.Polygon(hdc, arr, len(pts))
-    _gdi32.SelectObject(hdc, oldp)
-    _gdi32.SelectObject(hdc, oldb)
-    _gdi32.DeleteObject(pen)
-    _gdi32.DeleteObject(br)
-
-
-def _draw_pin(hdc, cx, cy, scale, color):
-    """置顶：向上的箭头压在一条底座上。"""
-    s = max(8, int(round(_GLYPH * scale)))
-    h2 = s // 2
-    top = cy - h2
-    _poly(hdc, [(cx, top), (cx - h2, top + s // 2), (cx + h2, top + s // 2)], color)
-    _line(hdc, cx, top + s // 2, cx, cy + h2, color, max(1, s // 8))
-    _line(hdc, cx - h2 + 1, cy + h2, cx + h2 - 1, cy + h2, color, max(1, s // 8))

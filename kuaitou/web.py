@@ -336,12 +336,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(screen_off(serial))
 
         elif path == '/api/config':
-            save_config(body)
+            # 写失败要如实报回界面：配置是直接覆盖写的，静默失败的话用户会以为存上了，
+            # 下次打开却发现改动全没了，且没有任何线索。
+            saved = save_config(body)
             if 'minimize_to_tray' in body or 'autostart' in body:
                 _tray_sync()          # 开关一变就启停托盘图标
             if 'theme' in body:
                 winbar.style_main_window(body.get('theme'))   # 标题栏跟着主题换色
-            resp = {"ok": True}
+            resp = {"ok": bool(saved)}
+            if not saved:
+                resp["error"] = "配置没有写入成功（存储位置不可写），这次改动不会保留"
             if 'autostart' in body:
                 resp["autostart"] = _apply_autostart(bool(body['autostart']))
             self.send_json(resp)
