@@ -1,5 +1,5 @@
 # 开发工具统一配置（运行时不读取本文件）。
-# 用法见 README「开发」一节：ruff 静态检查、pytest 单元测试。
+# 用法见 docs/开发.md 的「测试与 CI」一节：ruff 静态检查、pytest 单元测试。
 
 [tool.ruff]
 line-length = 120

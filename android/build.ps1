@@ -1,9 +1,9 @@
-﻿# 打包手机侧取图 dex（android/icondump.dex）。
+# 打包手机侧取图 dex（android/icondump.dex）。
 #
 # 取图程序跑在手机的 app_process 里，不装 App、不要权限，所以不需要清单、资源、
 # 对齐、签名那一整套 —— javac 编译 + d8 转 dex 两步就出产物。
 #
-# 前置：把 JDK 与 Android SDK 放在 .build\toolchain 下（见 README 的构建说明）
+# 前置：把 JDK 与 Android SDK 放在 .build\toolchain 下（见 docs/开发.md 的「手机侧取图程序」）
 #   .build\toolchain\jdk-17.0.20.1+1
 #   .build\toolchain\sdk\build-tools\35.0.1
 #   .build\toolchain\sdk\platforms\android-35\android.jar
