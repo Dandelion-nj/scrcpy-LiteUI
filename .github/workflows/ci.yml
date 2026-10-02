@@ -31,3 +31,24 @@ jobs:
         run: pip install -r requirements.txt
       - name: 单元测试（pytest）
         run: pytest -q
+
+  package:
+    # 交付物是 exe，所以单独有个 job 把它真打一遍。它一次验证两件事：
+    #   1）干净克隆（没有 icons/，未入库）也能打出包；
+    #   2）产物里带的版本号与源码 storage.APP_VERSION 一致——忘了升版本号就发不出去。
+    # 产物 45MB，不上传 artifact：这个 job 管验证，不管分发。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+      - name: 打包
+        run: python -m PyInstaller --noconfirm --clean KuaitouBuild.spec
+      - name: 校验产物版本号与源码一致
+        # 不传产物路径：默认值在脚本里拼，省得中文文件名经 PowerShell 转手出岔子
+        run: python scripts/check_exe_version.py

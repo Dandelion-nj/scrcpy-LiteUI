@@ -17,8 +17,10 @@ scrcpy_launch.log
 # （详见 THIRD-PARTY-NOTICES.md）。本地保留用于打包，不入库。
 icons/
 
-# 打包中间产物
+# 打包中间产物。快投.spec 是从命令行跑 PyInstaller 时按 --name 自动生成的副本，
+# 唯一该维护的是 KuaitouBuild.spec，这份副本别提交进来。
 KuaitouBuild.spec.bak
+快投.spec
 
 # scrcpy 源码：只当参考用（本项目不改它），1.7 MB / 371 个文件入库只会让
 # diff 和克隆都很吵，需要时本地放一份即可
