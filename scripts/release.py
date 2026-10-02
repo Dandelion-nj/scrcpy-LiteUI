@@ -179,6 +179,20 @@ def _build(exe):
     _run([sys.executable, script, exe])
 
 
+def _push_branch(dry_run):
+    """打标签之前先把当前分支推上去。
+
+    只推标签是不够的：标签指向的提交如果不在远端分支上，发布页看着一切正常，而默认分支
+    上根本没有这版代码——远端 main 会一直停在上一版，直到有人发现。
+    """
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if dry_run:
+        print("[干跑] 会推送分支 %s" % branch)
+        return
+    print("=== 推送分支 ===")
+    _git("push", "origin", branch)
+
+
 def _ensure_tag(tag, dry_run):
     """标签不存在就创建并推送；已存在就必须指向当前 HEAD（绝不覆盖）。"""
     exists = _git("rev-parse", "-q", "--verify", "refs/tags/%s" % tag, check=False).returncode == 0
@@ -310,6 +324,7 @@ def _main(args, parser):
     else:
         token = _token()
 
+    _push_branch(args.dry_run)
     _ensure_tag(tag, args.dry_run)
     rel = _ensure_release(slug, tag, payload, token, args.dry_run)
     if not args.dry_run:
